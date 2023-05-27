@@ -98,7 +98,7 @@ incomeLBF, _ := assembly.CreateAccount(Account{
 	Parent: &incomeAcct.ID,
 })
 
-timmy, _ := assembly.CreatePerson("Little Timmy", "little.timmy@gmail.com", "214657")
+timmy, _ := assembly.CreatePerson("Litt>le Timmy", "little.timmy@gmail.com", "214657")
 nbf, _ := assembly.CreatePerson("National Bahá'í Fund")
 lbfItem, _ := assembly.CreateItem({"Local Bahá'í Fund", "LBF"})
 emSOAItem, _ := assembly.CreateItem({"Earmark - Shrine of Abdulbaha", "SOA"})

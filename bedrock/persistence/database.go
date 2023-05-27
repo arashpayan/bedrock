@@ -1,9 +1,11 @@
 package persistence
 
 import (
+	"context"
 	_ "embed"
 	"fmt"
 
+	"ara.sh/iabdaccounting/bedrock/model"
 	"github.com/jmoiron/sqlx"
 	_ "github.com/mattn/go-sqlite3"
 	"github.com/rs/zerolog/log"
@@ -16,7 +18,8 @@ const requiredVersion = 1
 var migrationsSQL []byte
 
 type Database struct {
-	dbx *sqlx.DB
+	dbx      *sqlx.DB
+	Assembly model.Assembly
 }
 
 func Open(path string) (*Database, error) {
@@ -41,6 +44,12 @@ func Open(path string) (*Database, error) {
 		}
 	}
 
+	asbly, err := db.AssemblyInfo(context.Background())
+	if err != nil {
+		return nil, fmt.Errorf("loading assembly info")
+	}
+	db.Assembly = *asbly
+
 	return db, nil
 }
 
@@ -57,6 +66,10 @@ func (db *Database) migrate(currVer uint) error {
 
 	if err := db.setSchemaVersion(tx, requiredVersion); err != nil {
 		return fmt.Errorf("setting assembly file version: %v", err)
+	}
+
+	if _, err := tx.Exec("PRAGMA foreign_keys = ON;"); err != nil {
+		return fmt.Errorf("enabling foreign keys: %v", err)
 	}
 
 	if err := tx.Commit(); err != nil {
