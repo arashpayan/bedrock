@@ -15,5 +15,3 @@ func OpenAssembly(path string) (*Assembly, error) {
 	}
 	return &Assembly{db: *db}, nil
 }
-
-// func (a *Assembly) CreateAccount(in)

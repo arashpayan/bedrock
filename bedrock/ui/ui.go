@@ -1,43 +1,101 @@
 package ui
 
-import tea "github.com/charmbracelet/bubbletea"
+import (
+	"github.com/charmbracelet/bubbles/key"
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/rs/zerolog/log"
+)
 
 type Screen int
 
-const (
-	MainScreen Screen = iota
-	CommunityScreen
-)
-
-type UI struct {
-	Current Screen
-	ms      MainScreenModel
+type BedrockScreen interface {
+	isBedrockScreen()
+	tea.Model
 }
 
-func New() UI {
-	return UI{
-		ms: NewMainScreen(),
+const (
+	MainScreen Screen = iota
+	AccountsScreen
+	CreateAccountScreen
+	TransactionsScreen
+)
+
+type popScreenMsg bool
+
+func popScreenCmd() tea.Msg {
+	return popScreenMsg(true)
+}
+
+type screenDidAppearMsg bool
+
+type switchScreenMsg BedrockScreen
+
+func switchScreenCmd(m BedrockScreen) tea.Cmd {
+	return func() tea.Msg {
+		return switchScreenMsg(m)
 	}
 }
 
-func (m UI) Init() tea.Cmd {
+type UI struct {
+	quit key.Binding
+
+	stack []BedrockScreen
+}
+
+func New() *UI {
+	controller := &UI{
+		quit: key.NewBinding(
+			key.WithKeys("ctrl+q", "ctrl+c"),
+			key.WithHelp("ctrl+q/c", "Quit"),
+		),
+	}
+	root := NewMainScreen(controller)
+	controller.stack = []BedrockScreen{root}
+	return controller
+}
+
+func (m *UI) Init() tea.Cmd {
 	return nil
 }
 
-func (m UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	switch m.Current {
-	case MainScreen:
-		return m.ms.Update(msg)
+func (m *UI) popScreen() (tea.Model, tea.Cmd) {
+	if len(m.stack) == 1 {
+		return m, tea.Quit
 	}
+
+	m.stack = m.stack[:len(m.stack)-1]
 
 	return m, nil
 }
 
-func (m UI) View() string {
-	switch m.Current {
-	case MainScreen:
-		return m.ms.View()
+func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	log.Info().Msgf("UI.Update: %T", msg)
+	switch msg := msg.(type) {
+	case tea.KeyMsg:
+		switch msg.Type {
+		case tea.KeyEsc:
+			return m.popScreen()
+		case tea.KeyCtrlC:
+			fallthrough
+		case tea.KeyCtrlQ:
+			return m, tea.Quit
+		}
+	case popScreenMsg:
+		log.Info().Msg("received a pop screen message")
+		return m.popScreen()
+	case switchScreenMsg:
+		m.stack = append(m.stack, BedrockScreen(msg))
+		log.Info().Msgf("new screen %T", BedrockScreen(msg))
+		return m, func() tea.Msg { return screenDidAppearMsg(true) }
 	}
 
-	return "Broken world!"
+	curr := m.stack[len(m.stack)-1]
+	newCurr, newCmd := curr.Update(msg)
+	m.stack[len(m.stack)-1] = newCurr.(BedrockScreen)
+	return m, newCmd
+}
+
+func (m *UI) View() string {
+	screen := m.stack[len(m.stack)-1]
+	return screen.View()
 }
