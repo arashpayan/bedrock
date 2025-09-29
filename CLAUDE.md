@@ -43,6 +43,11 @@ Bedrock is a Go library that provides simplified QuickBooks-like functionality s
 - `Receipt` - issued for contributions with HumanID (auto-generated), CustomerID (Party FK), SoldAt timestamp, and TransactionID foreign key
 - `ReceiptItem` - line items on receipts linking to Items with Price (Money type)
 
+### Expense Management
+- `Category` - represents expense categories for withdrawal transactions (e.g., "Office Supplies", "Food", "Travel")
+- `Expense` - line items for withdrawal transactions linking to Categories with Amount (Money type) and optional Description
+- `ExpenseItem` - input type for creating withdrawals with expense breakdowns
+
 ### People & Entities
 - `Party` - represents both contributors and vendors with optional contact information (email, Bahá'í ID, address, phone)
 
@@ -57,6 +62,7 @@ Bedrock is a Go library that provides simplified QuickBooks-like functionality s
 - **Assembly**: One per database file (no foreign keys needed)
 - **BankAccount**: Hierarchical (parent/child) via ParentID for sub-accounts and earmarking
 - **Item**: Independent contribution categories
+- **Category**: Independent expense categories
 - **Party**: Independent entities (contributors and vendors)
 - **Receipt → Party**: Many-to-One (receipts belong to customers)
 - **Receipt → Transaction**: Many-to-One (each receipt belongs to exactly one deposit transaction, or none if not yet deposited)
@@ -64,19 +70,40 @@ Bedrock is a Go library that provides simplified QuickBooks-like functionality s
 - **ReceiptItem → Item**: Many-to-One (items can be referenced by multiple receipt items)
 - **Transaction → BankAccount**: Many-to-One (transactions belong to specific accounts)
 - **Transaction → Party**: Many-to-One (withdrawal transactions have payees)
+- **Transaction → Expense**: One-to-Many (withdrawal transactions contain multiple expense line items)
+- **Expense → Category**: Many-to-One (expenses belong to specific categories)
 
 ## Database Schema
 Schema is defined in `schema.sql` and embedded into the Go binary using `//go:embed`. Complete schema includes:
 - `assembly` table - single row per database file with name and timezone
 - `bank_accounts` table - hierarchical accounts with parent_id foreign key, currency, and account type
 - `items` table - contribution categories/funds
+- `categories` table - expense categories for withdrawal transactions
 - `parties` table - contributors and vendors with optional contact fields (email, Bahá'í ID, address, phone)
 - `receipts` table - contribution receipts with customer_id (Party FK) and transaction_id foreign key (nullable)
 - `receipt_items` table - line items with receipt_id and item_id foreign keys, price and currency
 - `transactions` table - all deposits and withdrawals with account_id and optional payee_id foreign keys
+- `expenses` table - expense line items with transaction_id and category_id foreign keys, amount and optional description
 - Automatic timestamp triggers for modified_at updates on all tables
+- Foreign key constraints enabled for data integrity
 
-## API Usage Pattern
+## API Usage Patterns
+
+### Creating a New Bedrock Database
+```go
+// Create a new .bedrock database with Assembly initialization
+eastern, _ := time.LoadLocation("America/New_York")
+db, err := bedrock.New("/path/to/finances.bedrock", "Local Spiritual Assembly of New York", eastern)
+if err != nil {
+    // handle error
+}
+defer db.Close()
+
+// Assembly is automatically created and ready to use
+assembly, err := db.Assembly()
+```
+
+### Opening an Existing Bedrock Database
 ```go
 db, err := bedrock.Open("/path/to/finances.bedrock")
 if err != nil {
@@ -96,18 +123,23 @@ defer db.Close()
 ✅ Proper one-to-many relationships established
 ✅ **Complete database schema implemented** in `schema.sql` with all required tables and triggers
 ✅ **CRUD Operations Completed:**
+  - **Assembly Operations**: Assembly, UpdateAssembly (creation only via `bedrock.New()`, one assembly per database)
   - **Item CRUD**: CreateItem, Item, ItemByName, ListItems, UpdateItem, DeleteItem
+  - **Category CRUD**: CreateCategory, Category, CategoryByName, Categories, UpdateCategory, DeleteCategory
   - **Party CRUD**: CreateParty, Party, PartyByName, PartyByEmail, PartyByBahaiID, ListParties, SearchParties, UpdateParty, DeleteParty
   - **Receipt CRUD**: CreateReceipt (auto HumanID with current time), Receipt, ReceiptByHumanID, ReceiptsByCustomer, ReceiptsByTransaction, UndepositedReceipts, Receipts, AssignReceiptToTransaction, UnassignReceiptFromTransaction, DeleteReceipt
   - **BankAccount CRUD**: CreateBankAccount, BankAccount, BankAccountByName, RootBankAccounts, ChildBankAccounts, BankAccounts, ActiveBankAccounts, UpdateBankAccount, DeactivateBankAccount, DeleteBankAccount
-  - **Transaction CRUD**: CreateDeposit, CreateWithdrawal (with currency validation)
+  - **Transaction CRUD**: CreateDeposit, CreateWithdrawal (with expense categorization and currency validation)
 
 ## Advanced Features Implemented
+- **Database Initialization**: `bedrock.New()` creates new databases with automatic Assembly setup and timezone configuration
 - **Timezone-Aware Receipt IDs**: HumanID automatically generated using current system time in Assembly timezone format `20060102150405.000` (ensures uniqueness)
 - **Cycle Prevention**: BankAccount parent relationships prevent circular references with comprehensive validation
 - **Currency Validation**: Transactions validated against account currency to prevent currency mismatches
-- **Referential Integrity**: Prevents deletion of entities with dependencies (accounts with children/transactions, receipts with items)
-- **Workflow Support**: Undeposited receipts tracking, transaction assignment, hierarchical account queries
+- **Expense Categorization**: Withdrawal transactions require one or more expense items with automatic total calculation and validation
+- **Referential Integrity**: Prevents deletion of entities with dependencies (accounts with children/transactions, receipts with items, categories with expenses)
+- **Single Assembly Per Database**: Each `.bedrock` file contains exactly one Assembly with proper validation
+- **Workflow Support**: Undeposited receipts tracking, transaction assignment, hierarchical account queries, expense breakdowns
 - **Idiomatic Go API**: All method names follow Go conventions (e.g., `Item()` instead of `GetItem()`) per Google Go Style Guide
 - **Embedded Schema**: Database schema stored in `schema.sql` and embedded using `//go:embed` for clean separation of concerns
 
@@ -118,21 +150,59 @@ defer db.Close()
 4. **Make Deposits** - Group receipts together and create deposit Transaction when money is banked
 5. **Track Relationships** - Each receipt can only belong to one deposit transaction (immutable once assigned)
 
+## Expense Workflow
+1. **Create Categories** - Define expense categories (Office Supplies, Food, Travel, etc.)
+2. **Create Parties** - Add vendors and payees to the system
+3. **Make Withdrawals** - Create withdrawal transactions with one or more expense items categorizing the spending
+4. **Automatic Validation** - System ensures all expenses use consistent currency and sum to the withdrawal total
+
 ## Testing
 ✅ **Comprehensive test suite implemented** using `github.com/stretchr/testify` for enhanced assertions
-- **100+ test cases** covering all CRUD operations and edge cases
+- **130+ test cases** covering all CRUD operations and edge cases
 - **Database isolation**: Each test uses temporary databases for clean state
 - **Error case testing**: Validation errors, constraint violations, referential integrity
-- **Workflow testing**: Receipt-to-transaction assignment, hierarchical accounts, currency validation
+- **Workflow testing**: Receipt-to-transaction assignment, hierarchical accounts, currency validation, expense categorization
+- **Expense validation testing**: Currency mismatches, mixed currencies, zero amounts, foreign key constraints
 - **Type safety testing**: Money type precision, currency handling, string formatting
+
+## Usage Examples
+
+### Creating Expense Categories and Withdrawals
+```go
+// Create expense categories
+officeCategory, err := db.CreateCategory("Office Supplies")
+foodCategory, err := db.CreateCategory("Food & Refreshments")
+
+// Create withdrawal with multiple expense categories
+expenses := []ExpenseItem{
+    {
+        CategoryID:  officeCategory.ID,
+        Description: &[]string{"Printer paper and pens"}[0],
+        Amount:      NewMoney(2000, CurrencyUSD), // $20.00
+    },
+    {
+        CategoryID:  foodCategory.ID,
+        Description: &[]string{"Meeting refreshments"}[0],
+        Amount:      NewMoney(8000, CurrencyUSD), // $80.00
+    },
+}
+
+transaction, err := db.CreateWithdrawal(
+    accountID, payeeID, TransactionMethodCheck, 
+    "Office supplies and meeting food", time.Now(), 
+    &checkNumber, expenses,
+)
+// Total withdrawal: $100.00 automatically calculated
+```
 
 ## Next Steps (Suggested)
 - Assembly creation/retrieval methods
-- ReceiptItem CRUD operations  
+- ReceiptItem CRUD operations
+- Expense querying and reporting methods (ExpensesByCategory, ExpensesByTransaction, etc.)
 - Transaction querying and reporting methods
-- Account balance calculations
-- Reporting functionality (contribution summaries, financial statements)
-- Data validation rules and constraints
+- Account balance calculations with expense breakdowns
+- Reporting functionality (contribution summaries, expense reports, financial statements)
+- Budget tracking and variance analysis
 
 ## Testing Commands
 - `go mod tidy` - Clean up dependencies

@@ -29,6 +29,13 @@ CREATE TABLE IF NOT EXISTS items (
     modified_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS categories (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    modified_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS parties (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL,
@@ -80,6 +87,19 @@ CREATE TABLE IF NOT EXISTS transactions (
     FOREIGN KEY (payee_id) REFERENCES parties(id)
 );
 
+CREATE TABLE IF NOT EXISTS expenses (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    transaction_id INTEGER NOT NULL,
+    category_id INTEGER NOT NULL,
+    description TEXT,
+    amount INTEGER NOT NULL,
+    currency TEXT NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    modified_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (transaction_id) REFERENCES transactions(id),
+    FOREIGN KEY (category_id) REFERENCES categories(id)
+);
+
 -- Triggers to update modified_at timestamp automatically
 CREATE TRIGGER IF NOT EXISTS update_assembly_modified_at
     AFTER UPDATE ON assembly
@@ -121,4 +141,16 @@ CREATE TRIGGER IF NOT EXISTS update_transactions_modified_at
     AFTER UPDATE ON transactions
 BEGIN
     UPDATE transactions SET modified_at = CURRENT_TIMESTAMP WHERE id = NEW.id;
+END;
+
+CREATE TRIGGER IF NOT EXISTS update_categories_modified_at
+    AFTER UPDATE ON categories
+BEGIN
+    UPDATE categories SET modified_at = CURRENT_TIMESTAMP WHERE id = NEW.id;
+END;
+
+CREATE TRIGGER IF NOT EXISTS update_expenses_modified_at
+    AFTER UPDATE ON expenses
+BEGIN
+    UPDATE expenses SET modified_at = CURRENT_TIMESTAMP WHERE id = NEW.id;
 END;

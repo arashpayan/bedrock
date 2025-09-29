@@ -89,6 +89,12 @@ type Item struct {
 	Name string `db:"name"`
 }
 
+// Category represents an expense category for withdrawal transactions
+type Category struct {
+	Base
+	Name string `db:"name"`
+}
+
 // Receipt represents a receipt issued for contributions
 type Receipt struct {
 	Base
@@ -106,6 +112,22 @@ type ReceiptItem struct {
 	ItemID      ID     `db:"item_id"`     // foreign key to item
 	Description string `db:"description"` // description of the contribution
 	Price       Money  `db:"price"`       // amount contributed
+}
+
+// Expense represents a line item for a withdrawal transaction
+type Expense struct {
+	Base
+	TransactionID ID      `db:"transaction_id"` // foreign key to withdrawal transaction
+	CategoryID    ID      `db:"category_id"`    // foreign key to expense category
+	Description   *string `db:"description"`    // optional description of the expense
+	Amount        Money   `db:"amount"`         // expense amount
+}
+
+// ExpenseItem represents an expense item when creating a withdrawal
+type ExpenseItem struct {
+	CategoryID  ID
+	Description *string
+	Amount      Money
 }
 
 // Party represents contributors and vendors
@@ -147,9 +169,34 @@ type DB struct {
 	sq   squirrel.StatementBuilderType
 }
 
+// New creates a new bedrock database file with an initialized Spiritual Assembly
+func New(filepath string, assemblyName string, timezone *time.Location) (*DB, error) {
+	if assemblyName == "" {
+		return nil, fmt.Errorf("assembly name cannot be empty")
+	}
+	if timezone == nil {
+		return nil, fmt.Errorf("timezone cannot be nil")
+	}
+
+	// Create the database using Open
+	db, err := Open(filepath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create database: %w", err)
+	}
+
+	// Create the assembly
+	_, err = db.createAssembly(assemblyName, timezone)
+	if err != nil {
+		db.Close()
+		return nil, fmt.Errorf("failed to create assembly: %w", err)
+	}
+
+	return db, nil
+}
+
 // Open opens or creates a bedrock database file
 func Open(filepath string) (*DB, error) {
-	conn, err := sqlx.Connect("sqlite3", filepath+"?_loc=auto")
+	conn, err := sqlx.Connect("sqlite3", filepath+"?_loc=auto&_foreign_keys=on")
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
