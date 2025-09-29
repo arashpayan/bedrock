@@ -17,17 +17,8 @@ func (db *DB) CreateBankAccount(name string, accountType AccountType, currency C
 		}
 	}
 
-	account := &BankAccount{
-		ParentID:    parentID,
-		Name:        name,
-		AccountType: accountType,
-		Currency:    currency,
-		Description: description,
-		IsActive:    isActive,
-	}
-
 	query, args := db.sq.Insert("bank_accounts").
-		SetMap(map[string]interface{}{
+		SetMap(map[string]any{
 			"parent_id":    parentID,
 			"name":         name,
 			"account_type": accountType,
@@ -35,15 +26,15 @@ func (db *DB) CreateBankAccount(name string, accountType AccountType, currency C
 			"description":  description,
 			"is_active":    isActive,
 		}).
-		Suffix("RETURNING id, created_at, modified_at").
+		Suffix("RETURNING *").
 		MustSql()
 
-	err := db.conn.QueryRow(query, args...).Scan(&account.ID, &account.CreatedAt, &account.ModifiedAt)
-	if err != nil {
+	account := BankAccount{}
+	if err := db.conn.Get(&account, query, args...); err != nil {
 		return nil, fmt.Errorf("failed to insert bank account: %w", err)
 	}
 
-	return account, nil
+	return &account, nil
 }
 
 // BankAccount retrieves a bank account by ID
@@ -174,12 +165,11 @@ func (db *DB) UpdateBankAccount(id ID, name string, accountType AccountType, cur
 			"is_active":    isActive,
 		}).
 		Where("id = ?", id).
-		Suffix("RETURNING id, parent_id, name, account_type, currency, description, is_active, created_at, modified_at").
+		Suffix("RETURNING *").
 		MustSql()
 
 	var account BankAccount
-	err := db.conn.QueryRow(query, args...).Scan(&account.ID, &account.ParentID, &account.Name, &account.AccountType, &account.Currency, &account.Description, &account.IsActive, &account.CreatedAt, &account.ModifiedAt)
-	if err != nil {
+	if err := db.conn.Get(&account, query, args...); err != nil {
 		return nil, fmt.Errorf("failed to update bank account: %w", err)
 	}
 
@@ -193,12 +183,11 @@ func (db *DB) DeactivateBankAccount(id ID) (*BankAccount, error) {
 			"is_active": false,
 		}).
 		Where("id = ?", id).
-		Suffix("RETURNING id, parent_id, name, account_type, currency, description, is_active, created_at, modified_at").
+		Suffix("RETURNING *").
 		MustSql()
 
 	var account BankAccount
-	err := db.conn.QueryRow(query, args...).Scan(&account.ID, &account.ParentID, &account.Name, &account.AccountType, &account.Currency, &account.Description, &account.IsActive, &account.CreatedAt, &account.ModifiedAt)
-	if err != nil {
+	if err := db.conn.Get(&account, query, args...); err != nil {
 		return nil, fmt.Errorf("failed to deactivate bank account: %w", err)
 	}
 

@@ -2,6 +2,7 @@
 package bedrock
 
 import (
+	_ "embed"
 	"fmt"
 	"time"
 
@@ -9,6 +10,9 @@ import (
 	"github.com/jmoiron/sqlx"
 	_ "github.com/mattn/go-sqlite3"
 )
+
+//go:embed schema.sql
+var schemaSQL string
 
 // ID represents a unique identifier for entities in the system
 type ID int64
@@ -145,7 +149,7 @@ type DB struct {
 
 // Open opens or creates a bedrock database file
 func Open(filepath string) (*DB, error) {
-	conn, err := sqlx.Connect("sqlite3", filepath)
+	conn, err := sqlx.Connect("sqlite3", filepath+"?_loc=auto")
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
@@ -174,41 +178,6 @@ func (db *DB) Close() error {
 
 // initSchema creates the necessary tables if they don't exist
 func (db *DB) initSchema() error {
-	schema := `
-	CREATE TABLE IF NOT EXISTS assembly (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
-		name TEXT NOT NULL,
-		timezone TEXT NOT NULL,
-		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-		modified_at DATETIME DEFAULT CURRENT_TIMESTAMP
-	);
-
-	CREATE TABLE IF NOT EXISTS bank_accounts (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
-		parent_id INTEGER,
-		name TEXT NOT NULL,
-		account_type TEXT NOT NULL,
-		description TEXT,
-		is_active BOOLEAN DEFAULT 1,
-		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-		modified_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-		FOREIGN KEY (parent_id) REFERENCES bank_accounts(id)
-	);
-
-	-- Triggers to update modified_at timestamp
-	CREATE TRIGGER IF NOT EXISTS update_assembly_modified_at
-		AFTER UPDATE ON assembly
-	BEGIN
-		UPDATE assembly SET modified_at = CURRENT_TIMESTAMP WHERE id = NEW.id;
-	END;
-
-	CREATE TRIGGER IF NOT EXISTS update_bank_accounts_modified_at
-		AFTER UPDATE ON bank_accounts
-	BEGIN
-		UPDATE bank_accounts SET modified_at = CURRENT_TIMESTAMP WHERE id = NEW.id;
-	END;
-	`
-
-	_, err := db.conn.Exec(schema)
+	_, err := db.conn.Exec(schemaSQL)
 	return err
 }

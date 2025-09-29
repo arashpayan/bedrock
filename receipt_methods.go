@@ -20,8 +20,8 @@ func (db *DB) CreateReceipt(customerID ID, soldAt time.Time) (*Receipt, error) {
 		return nil, fmt.Errorf("failed to parse assembly timezone %s: %w", assemblyTimezone, err)
 	}
 
-	// Generate HumanID using the format 20060102150405.999 in assembly timezone
-	humanID := soldAt.In(location).Format("20060102150405.000")
+	// Generate HumanID using current system time in assembly timezone format 20060102150405.999
+	humanID := time.Now().In(location).Format("20060102150405.000")
 
 	// Verify customer exists
 	_, err = db.Party(customerID)
@@ -29,27 +29,21 @@ func (db *DB) CreateReceipt(customerID ID, soldAt time.Time) (*Receipt, error) {
 		return nil, fmt.Errorf("customer not found: %w", err)
 	}
 
-	receipt := &Receipt{
-		HumanID:    humanID,
-		CustomerID: customerID,
-		SoldAt:     soldAt,
-	}
-
 	query, args := db.sq.Insert("receipts").
-		SetMap(map[string]interface{}{
+		SetMap(map[string]any{
 			"human_id":    humanID,
 			"customer_id": customerID,
-			"sold_at":     soldAt,
+			"sold_at":     soldAt.Round(0),
 		}).
-		Suffix("RETURNING id, created_at, modified_at").
+		Suffix("RETURNING *").
 		MustSql()
 
-	err = db.conn.QueryRow(query, args...).Scan(&receipt.ID, &receipt.CreatedAt, &receipt.ModifiedAt)
-	if err != nil {
+	receipt := Receipt{}
+	if err := db.conn.Get(&receipt, query, args...); err != nil {
 		return nil, fmt.Errorf("failed to insert receipt: %w", err)
 	}
 
-	return receipt, nil
+	return &receipt, nil
 }
 
 // Receipt retrieves a receipt by ID
@@ -170,16 +164,15 @@ func (db *DB) AssignReceiptToTransaction(receiptID, transactionID ID) (*Receipt,
 	}
 
 	query, args := db.sq.Update("receipts").
-		SetMap(map[string]interface{}{
+		SetMap(map[string]any{
 			"transaction_id": transactionID,
 		}).
 		Where("id = ?", receiptID).
-		Suffix("RETURNING id, human_id, customer_id, sold_at, transaction_id, created_at, modified_at").
+		Suffix("RETURNING *").
 		MustSql()
 
 	var receipt Receipt
-	err = db.conn.QueryRow(query, args...).Scan(&receipt.ID, &receipt.HumanID, &receipt.CustomerID, &receipt.SoldAt, &receipt.TransactionID, &receipt.CreatedAt, &receipt.ModifiedAt)
-	if err != nil {
+	if err := db.conn.Get(&receipt, query, args...); err != nil {
 		return nil, fmt.Errorf("failed to assign receipt to transaction: %w", err)
 	}
 
@@ -189,16 +182,15 @@ func (db *DB) AssignReceiptToTransaction(receiptID, transactionID ID) (*Receipt,
 // UnassignReceiptFromTransaction removes a receipt's transaction assignment
 func (db *DB) UnassignReceiptFromTransaction(receiptID ID) (*Receipt, error) {
 	query, args := db.sq.Update("receipts").
-		SetMap(map[string]interface{}{
+		SetMap(map[string]any{
 			"transaction_id": nil,
 		}).
 		Where("id = ?", receiptID).
-		Suffix("RETURNING id, human_id, customer_id, sold_at, transaction_id, created_at, modified_at").
+		Suffix("RETURNING *").
 		MustSql()
 
 	var receipt Receipt
-	err := db.conn.QueryRow(query, args...).Scan(&receipt.ID, &receipt.HumanID, &receipt.CustomerID, &receipt.SoldAt, &receipt.TransactionID, &receipt.CreatedAt, &receipt.ModifiedAt)
-	if err != nil {
+	if err := db.conn.Get(&receipt, query, args...); err != nil {
 		return nil, fmt.Errorf("failed to unassign receipt from transaction: %w", err)
 	}
 

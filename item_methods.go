@@ -10,23 +10,19 @@ func (db *DB) CreateItem(name string) (*Item, error) {
 		return nil, fmt.Errorf("item name cannot be empty")
 	}
 
-	item := &Item{
-		Name: name,
-	}
-
 	query, args := db.sq.Insert("items").
 		SetMap(map[string]interface{}{
 			"name": name,
 		}).
-		Suffix("RETURNING id, created_at, modified_at").
+		Suffix("RETURNING *").
 		MustSql()
 
-	err := db.conn.QueryRow(query, args...).Scan(&item.ID, &item.CreatedAt, &item.ModifiedAt)
-	if err != nil {
+	item := Item{}
+	if err := db.conn.Get(&item, query, args...); err != nil {
 		return nil, fmt.Errorf("failed to insert item: %w", err)
 	}
 
-	return item, nil
+	return &item, nil
 }
 
 // Item retrieves an item by ID
@@ -91,12 +87,11 @@ func (db *DB) UpdateItem(id ID, name string) (*Item, error) {
 			"name": name,
 		}).
 		Where("id = ?", id).
-		Suffix("RETURNING id, name, created_at, modified_at").
+		Suffix("RETURNING *").
 		MustSql()
 
 	var item Item
-	err := db.conn.QueryRow(query, args...).Scan(&item.ID, &item.Name, &item.CreatedAt, &item.ModifiedAt)
-	if err != nil {
+	if err := db.conn.Get(&item, query, args...); err != nil {
 		return nil, fmt.Errorf("failed to update item: %w", err)
 	}
 

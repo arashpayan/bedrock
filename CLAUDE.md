@@ -23,6 +23,7 @@ Bedrock is a Go library that provides simplified QuickBooks-like functionality s
 - `github.com/jmoiron/sqlx` - Database operations with reduced boilerplate
 - `github.com/Masterminds/squirrel` - SQL query building with SetMap() and MustSql()
 - `github.com/mattn/go-sqlite3` - SQLite driver
+- `github.com/stretchr/testify` - Enhanced testing assertions and test utilities
 
 ## Core Types Implemented
 
@@ -64,15 +65,16 @@ Bedrock is a Go library that provides simplified QuickBooks-like functionality s
 - **Transaction → BankAccount**: Many-to-One (transactions belong to specific accounts)
 - **Transaction → Party**: Many-to-One (withdrawal transactions have payees)
 
-## Database Schema (Planned)
-- `assembly` table - single row per database file
-- `bank_accounts` table - hierarchical accounts with parent_id foreign key and currency
+## Database Schema
+Schema is defined in `schema.sql` and embedded into the Go binary using `//go:embed`. Complete schema includes:
+- `assembly` table - single row per database file with name and timezone
+- `bank_accounts` table - hierarchical accounts with parent_id foreign key, currency, and account type
 - `items` table - contribution categories/funds
-- `parties` table - contributors and vendors with optional contact fields
+- `parties` table - contributors and vendors with optional contact fields (email, Bahá'í ID, address, phone)
 - `receipts` table - contribution receipts with customer_id (Party FK) and transaction_id foreign key (nullable)
-- `receipt_items` table - line items with receipt_id and item_id foreign keys
+- `receipt_items` table - line items with receipt_id and item_id foreign keys, price and currency
 - `transactions` table - all deposits and withdrawals with account_id and optional payee_id foreign keys
-- Automatic timestamp triggers for modified_at updates
+- Automatic timestamp triggers for modified_at updates on all tables
 
 ## API Usage Pattern
 ```go
@@ -89,23 +91,25 @@ defer db.Close()
 ✅ Basic types and structures defined
 ✅ Financial types (Money, Currency) with integer precision
 ✅ Contribution workflow types (Item, Receipt, ReceiptItem, removed redundant Deposit type)
-✅ Database initialization with schema creation
+✅ Database initialization with schema creation from embedded SQL file
 ✅ Open/Close functionality implemented
 ✅ Proper one-to-many relationships established
+✅ **Complete database schema implemented** in `schema.sql` with all required tables and triggers
 ✅ **CRUD Operations Completed:**
-  - **Item CRUD**: CreateItem, Item, ItemByName, Items, UpdateItem, DeleteItem
-  - **Party CRUD**: CreateParty, Party, PartyByName, PartyByEmail, PartyByBahaiID, Parties, SearchParties, UpdateParty, DeleteParty
-  - **Receipt CRUD**: CreateReceipt (auto HumanID), Receipt, ReceiptByHumanID, ReceiptsByCustomer, ReceiptsByTransaction, UndepositedReceipts, Receipts, AssignReceiptToTransaction, UnassignReceiptFromTransaction, DeleteReceipt
+  - **Item CRUD**: CreateItem, Item, ItemByName, ListItems, UpdateItem, DeleteItem
+  - **Party CRUD**: CreateParty, Party, PartyByName, PartyByEmail, PartyByBahaiID, ListParties, SearchParties, UpdateParty, DeleteParty
+  - **Receipt CRUD**: CreateReceipt (auto HumanID with current time), Receipt, ReceiptByHumanID, ReceiptsByCustomer, ReceiptsByTransaction, UndepositedReceipts, Receipts, AssignReceiptToTransaction, UnassignReceiptFromTransaction, DeleteReceipt
   - **BankAccount CRUD**: CreateBankAccount, BankAccount, BankAccountByName, RootBankAccounts, ChildBankAccounts, BankAccounts, ActiveBankAccounts, UpdateBankAccount, DeactivateBankAccount, DeleteBankAccount
   - **Transaction CRUD**: CreateDeposit, CreateWithdrawal (with currency validation)
 
 ## Advanced Features Implemented
-- **Timezone-Aware Receipt IDs**: HumanID automatically generated using Assembly timezone in format `20060102150405.000`
+- **Timezone-Aware Receipt IDs**: HumanID automatically generated using current system time in Assembly timezone format `20060102150405.000` (ensures uniqueness)
 - **Cycle Prevention**: BankAccount parent relationships prevent circular references with comprehensive validation
 - **Currency Validation**: Transactions validated against account currency to prevent currency mismatches
 - **Referential Integrity**: Prevents deletion of entities with dependencies (accounts with children/transactions, receipts with items)
 - **Workflow Support**: Undeposited receipts tracking, transaction assignment, hierarchical account queries
 - **Idiomatic Go API**: All method names follow Go conventions (e.g., `Item()` instead of `GetItem()`) per Google Go Style Guide
+- **Embedded Schema**: Database schema stored in `schema.sql` and embedded using `//go:embed` for clean separation of concerns
 
 ## Contribution Workflow
 1. **Create Items** - Define contribution categories (Local Fund, Humanitarian Fund, etc.)
@@ -114,10 +118,17 @@ defer db.Close()
 4. **Make Deposits** - Group receipts together and create deposit Transaction when money is banked
 5. **Track Relationships** - Each receipt can only belong to one deposit transaction (immutable once assigned)
 
+## Testing
+✅ **Comprehensive test suite implemented** using `github.com/stretchr/testify` for enhanced assertions
+- **100+ test cases** covering all CRUD operations and edge cases
+- **Database isolation**: Each test uses temporary databases for clean state
+- **Error case testing**: Validation errors, constraint violations, referential integrity
+- **Workflow testing**: Receipt-to-transaction assignment, hierarchical accounts, currency validation
+- **Type safety testing**: Money type precision, currency handling, string formatting
+
 ## Next Steps (Suggested)
-- Update database schema with new tables in initSchema()
 - Assembly creation/retrieval methods
-- ReceiptItem CRUD operations
+- ReceiptItem CRUD operations  
 - Transaction querying and reporting methods
 - Account balance calculations
 - Reporting functionality (contribution summaries, financial statements)
@@ -125,5 +136,6 @@ defer db.Close()
 
 ## Testing Commands
 - `go mod tidy` - Clean up dependencies
-- `go build` - Build the library (currently compiles successfully)
-- `go test` - Run tests (when implemented)
+- `go build` - Build the library
+- `go test` - Run comprehensive test suite (all tests passing)
+- `go test -v` - Run tests with verbose output

@@ -10,14 +10,6 @@ func (db *DB) CreateParty(name string, emailAddress, bahaiIDNumber, address, tel
 		return nil, fmt.Errorf("party name cannot be empty")
 	}
 
-	party := &Party{
-		Name:            name,
-		EmailAddress:    emailAddress,
-		BahaiIDNumber:   bahaiIDNumber,
-		Address:         address,
-		TelephoneNumber: telephoneNumber,
-	}
-
 	query, args := db.sq.Insert("parties").
 		SetMap(map[string]interface{}{
 			"name":             name,
@@ -26,15 +18,15 @@ func (db *DB) CreateParty(name string, emailAddress, bahaiIDNumber, address, tel
 			"address":          address,
 			"telephone_number": telephoneNumber,
 		}).
-		Suffix("RETURNING id, created_at, modified_at").
+		Suffix("RETURNING *").
 		MustSql()
 
-	err := db.conn.QueryRow(query, args...).Scan(&party.ID, &party.CreatedAt, &party.ModifiedAt)
-	if err != nil {
+	party := Party{}
+	if err := db.conn.Get(&party, query, args...); err != nil {
 		return nil, fmt.Errorf("failed to insert party: %w", err)
 	}
 
-	return party, nil
+	return &party, nil
 }
 
 // Party retrieves a party by ID
@@ -155,12 +147,11 @@ func (db *DB) UpdateParty(id ID, name string, emailAddress, bahaiIDNumber, addre
 			"telephone_number": telephoneNumber,
 		}).
 		Where("id = ?", id).
-		Suffix("RETURNING id, name, email_address, bahai_id_number, address, telephone_number, created_at, modified_at").
+		Suffix("RETURNING *").
 		MustSql()
 
 	var party Party
-	err := db.conn.QueryRow(query, args...).Scan(&party.ID, &party.Name, &party.EmailAddress, &party.BahaiIDNumber, &party.Address, &party.TelephoneNumber, &party.CreatedAt, &party.ModifiedAt)
-	if err != nil {
+	if err := db.conn.Get(&party, query, args...); err != nil {
 		return nil, fmt.Errorf("failed to update party: %w", err)
 	}
 
