@@ -48,6 +48,10 @@ Bedrock is a Go library that provides simplified QuickBooks-like functionality s
 - `Expense` - line items for withdrawal transactions linking to Categories with Amount (Money type) and optional Description
 - `ExpenseItem` - input type for creating withdrawals with expense breakdowns
 
+### Ledger and Reporting
+- `LedgerEntry` - represents a single row in a ledger view with transaction data and running balance
+- `LedgerOptions` - provides filtering and pagination options for ledger queries
+
 ### People & Entities
 - `Party` - represents both contributors and vendors with optional contact information (email, Bahá'í ID, address, phone)
 
@@ -130,6 +134,7 @@ defer db.Close()
   - **Receipt CRUD**: CreateReceipt (auto HumanID with current time), Receipt, ReceiptByHumanID, ReceiptsByCustomer, ReceiptsByTransaction, UndepositedReceipts, Receipts, AssignReceiptToTransaction, UnassignReceiptFromTransaction, DeleteReceipt
   - **BankAccount CRUD**: CreateBankAccount, BankAccount, BankAccountByName, RootBankAccounts, ChildBankAccounts, BankAccounts, ActiveBankAccounts, UpdateBankAccount, DeactivateBankAccount, DeleteBankAccount
   - **Transaction CRUD**: CreateDeposit, CreateWithdrawal (with expense categorization and currency validation)
+  - **Ledger Operations**: AccountLedger, AccountBalance, AccountBalanceAsOf, TransactionsForAccount, AccountTransactionCount, AllAccountBalances, LastTransactionDate
 
 ## Advanced Features Implemented
 - **Database Initialization**: `bedrock.New()` creates new databases with automatic Assembly setup and timezone configuration
@@ -137,9 +142,12 @@ defer db.Close()
 - **Cycle Prevention**: BankAccount parent relationships prevent circular references with comprehensive validation
 - **Currency Validation**: Transactions validated against account currency to prevent currency mismatches
 - **Expense Categorization**: Withdrawal transactions require one or more expense items with automatic total calculation and validation
+- **Ledger Views**: Complete account ledgers with running balances, hierarchical account support, and enriched transaction data
+- **Balance Calculations**: Current and historical balance calculations with subaccount aggregation
 - **Referential Integrity**: Prevents deletion of entities with dependencies (accounts with children/transactions, receipts with items, categories with expenses)
 - **Single Assembly Per Database**: Each `.bedrock` file contains exactly one Assembly with proper validation
 - **Workflow Support**: Undeposited receipts tracking, transaction assignment, hierarchical account queries, expense breakdowns
+- **Performance Optimization**: Efficient SQL queries with pagination, date filtering, and recursive account tree traversal
 - **Idiomatic Go API**: All method names follow Go conventions (e.g., `Item()` instead of `GetItem()`) per Google Go Style Guide
 - **Embedded Schema**: Database schema stored in `schema.sql` and embedded using `//go:embed` for clean separation of concerns
 
@@ -158,11 +166,12 @@ defer db.Close()
 
 ## Testing
 ✅ **Comprehensive test suite implemented** using `github.com/stretchr/testify` for enhanced assertions
-- **130+ test cases** covering all CRUD operations and edge cases
+- **160+ test cases** covering all CRUD operations and edge cases
 - **Database isolation**: Each test uses temporary databases for clean state
 - **Error case testing**: Validation errors, constraint violations, referential integrity
 - **Workflow testing**: Receipt-to-transaction assignment, hierarchical accounts, currency validation, expense categorization
 - **Expense validation testing**: Currency mismatches, mixed currencies, zero amounts, foreign key constraints
+- **Ledger functionality testing**: Running balances, hierarchical account aggregation, date filtering, pagination
 - **Type safety testing**: Money type precision, currency handling, string formatting
 
 ## Usage Examples
@@ -193,6 +202,38 @@ transaction, err := db.CreateWithdrawal(
     &checkNumber, expenses,
 )
 // Total withdrawal: $100.00 automatically calculated
+```
+
+### Ledger Views and Balance Calculations
+```go
+// Get current account balance
+balance, err := db.AccountBalance(accountID, true) // include subaccounts
+fmt.Printf("Current balance: %s\n", balance.String())
+
+// Get account ledger with running balances
+ledger, err := db.AccountLedger(accountID, &LedgerOptions{
+    IncludeSubaccounts: true,
+    Limit:              &[]int{50}[0], // Last 50 transactions
+})
+
+// Display ledger entries
+for _, entry := range ledger {
+    fmt.Printf("%s | %s | %s | %s\n", 
+        entry.Transaction.TransactedAt.Format("2006-01-02"),
+        entry.Transaction.Memo,
+        entry.Transaction.Amount,
+        entry.RunningBalance.String())
+}
+
+// Get balance as of specific date
+asOfDate := time.Date(2024, 12, 31, 23, 59, 59, 0, time.UTC)
+yearEndBalance, err := db.AccountBalanceAsOf(accountID, asOfDate, true)
+
+// Get all account balances for financial statements
+allBalances, err := db.AllAccountBalances()
+for accountID, balance := range allBalances {
+    fmt.Printf("Account %d: %s\n", accountID, balance.String())
+}
 ```
 
 ## Next Steps (Suggested)

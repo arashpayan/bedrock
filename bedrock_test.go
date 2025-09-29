@@ -1046,3 +1046,261 @@ func TestExpenseValidation(t *testing.T) {
 		assert.Error(t, err, "Expected error for non-existent category")
 	})
 }
+
+func TestLedgerFunctionality(t *testing.T) {
+	db := testDB(t)
+	assembly, account, item, party, category := setupTestData(t, db)
+	_ = assembly
+	_ = item
+
+	// Create a child account for testing hierarchical features
+	childAccount, err := db.CreateBankAccount("Child Account", AccountTypeEarmark, CurrencyUSD, &account.ID, "Child of main account", true)
+	require.NoError(t, err, "Failed to create child account")
+
+	// Create some test transactions with specific dates for testing
+	baseTime := time.Date(2024, 1, 1, 10, 0, 0, 0, time.UTC)
+
+	// Transaction 1: Deposit $100 on Jan 1
+	deposit1, err := db.CreateDeposit(account.ID, NewMoney(10000, CurrencyUSD), TransactionMethodElectronicTransfer, "Initial deposit", baseTime)
+	require.NoError(t, err, "Failed to create deposit1")
+
+	// Transaction 2: Withdrawal $30 on Jan 2
+	expenses1 := []ExpenseItem{
+		{CategoryID: category.ID, Description: strPtr("Office supplies"), Amount: NewMoney(3000, CurrencyUSD)},
+	}
+	withdrawal1, err := db.CreateWithdrawal(account.ID, party.ID, TransactionMethodCheck, "Office supplies", baseTime.Add(24*time.Hour), strPtr("001"), expenses1)
+	require.NoError(t, err, "Failed to create withdrawal1")
+
+	// Transaction 3: Deposit $50 to child account on Jan 3
+	_, err = db.CreateDeposit(childAccount.ID, NewMoney(5000, CurrencyUSD), TransactionMethodElectronicTransfer, "Child account deposit", baseTime.Add(48*time.Hour))
+	require.NoError(t, err, "Failed to create deposit2")
+
+	// Transaction 4: Withdrawal $20 from main account on Jan 4
+	expenses2 := []ExpenseItem{
+		{CategoryID: category.ID, Description: strPtr("Food"), Amount: NewMoney(2000, CurrencyUSD)},
+	}
+	withdrawal2, err := db.CreateWithdrawal(account.ID, party.ID, TransactionMethodCheck, "Food", baseTime.Add(72*time.Hour), strPtr("002"), expenses2)
+	require.NoError(t, err, "Failed to create withdrawal2")
+
+	// Test AccountBalance
+	t.Run("AccountBalance", func(t *testing.T) {
+		// Main account balance (excluding subaccounts)
+		balance, err := db.AccountBalance(account.ID, false)
+		require.NoError(t, err, "AccountBalance should succeed")
+		assert.Equal(t, int64(5000), balance.Amount, "Main account balance should be $50 (100 - 30 - 20)")
+
+		// Main account balance (including subaccounts)
+		balanceWithSub, err := db.AccountBalance(account.ID, true)
+		require.NoError(t, err, "AccountBalance with subaccounts should succeed")
+		assert.Equal(t, int64(10000), balanceWithSub.Amount, "Total balance should be $100 (50 + 50)")
+
+		// Child account balance
+		childBalance, err := db.AccountBalance(childAccount.ID, false)
+		require.NoError(t, err, "Child AccountBalance should succeed")
+		assert.Equal(t, int64(5000), childBalance.Amount, "Child account balance should be $50")
+	})
+
+	// Test AccountBalanceAsOf
+	t.Run("AccountBalanceAsOf", func(t *testing.T) {
+		// Balance as of Jan 1 (after first deposit)
+		balanceJan1, err := db.AccountBalanceAsOf(account.ID, baseTime.Add(1*time.Hour), false)
+		require.NoError(t, err, "AccountBalanceAsOf should succeed")
+		assert.Equal(t, int64(10000), balanceJan1.Amount, "Balance on Jan 1 should be $100")
+
+		// Balance as of Jan 2 (after first withdrawal)
+		balanceJan2, err := db.AccountBalanceAsOf(account.ID, baseTime.Add(25*time.Hour), false)
+		require.NoError(t, err, "AccountBalanceAsOf should succeed")
+		assert.Equal(t, int64(7000), balanceJan2.Amount, "Balance on Jan 2 should be $70")
+
+		// Balance as of Jan 3 including subaccounts
+		balanceJan3, err := db.AccountBalanceAsOf(account.ID, baseTime.Add(49*time.Hour), true)
+		require.NoError(t, err, "AccountBalanceAsOf with subaccounts should succeed")
+		assert.Equal(t, int64(12000), balanceJan3.Amount, "Balance on Jan 3 with subaccounts should be $120")
+	})
+
+	// Test TransactionsForAccount
+	t.Run("TransactionsForAccount", func(t *testing.T) {
+		// Get all transactions for main account only
+		transactions, err := db.TransactionsForAccount(account.ID, false, nil)
+		require.NoError(t, err, "TransactionsForAccount should succeed")
+		assert.Len(t, transactions, 3, "Main account should have 3 transactions")
+
+		// Verify transaction order (oldest first)
+		assert.Equal(t, deposit1.ID, transactions[0].ID, "First transaction should be the initial deposit")
+		assert.Equal(t, withdrawal1.ID, transactions[1].ID, "Second transaction should be the first withdrawal")
+		assert.Equal(t, withdrawal2.ID, transactions[2].ID, "Third transaction should be the second withdrawal")
+
+		// Get all transactions including subaccounts
+		allTransactions, err := db.TransactionsForAccount(account.ID, true, nil)
+		require.NoError(t, err, "TransactionsForAccount with subaccounts should succeed")
+		assert.Len(t, allTransactions, 4, "All transactions should be 4")
+
+		// Test with date filtering
+		startDate := baseTime.Add(24 * time.Hour)
+		endDate := baseTime.Add(49 * time.Hour)
+		options := &LedgerOptions{
+			StartDate: &startDate,
+			EndDate:   &endDate,
+		}
+		filteredTransactions, err := db.TransactionsForAccount(account.ID, true, options)
+		require.NoError(t, err, "TransactionsForAccount with date filter should succeed")
+		assert.Len(t, filteredTransactions, 2, "Should have 2 transactions in date range")
+	})
+
+	// Test AccountLedger
+	t.Run("AccountLedger", func(t *testing.T) {
+		// Get ledger for main account only
+		ledger, err := db.AccountLedger(account.ID, &LedgerOptions{IncludeSubaccounts: false})
+		require.NoError(t, err, "AccountLedger should succeed")
+		assert.Len(t, ledger, 3, "Ledger should have 3 entries")
+
+		// Verify running balances
+		assert.Equal(t, int64(10000), ledger[0].RunningBalance.Amount, "First entry balance should be $100")
+		assert.Equal(t, int64(7000), ledger[1].RunningBalance.Amount, "Second entry balance should be $70")
+		assert.Equal(t, int64(5000), ledger[2].RunningBalance.Amount, "Third entry balance should be $50")
+
+		// Verify enriched data
+		assert.Equal(t, 1, ledger[1].ExpenseCount, "Withdrawal should have 1 expense")
+		assert.Equal(t, party.Name, *ledger[1].PayeeName, "Payee name should be set")
+
+		// Get ledger including subaccounts
+		fullLedger, err := db.AccountLedger(account.ID, &LedgerOptions{IncludeSubaccounts: true})
+		require.NoError(t, err, "AccountLedger with subaccounts should succeed")
+		assert.Len(t, fullLedger, 4, "Full ledger should have 4 entries")
+
+		// Verify final running balance includes subaccounts
+		assert.Equal(t, int64(10000), fullLedger[3].RunningBalance.Amount, "Final balance should be $100")
+	})
+
+	// Test AccountTransactionCount
+	t.Run("AccountTransactionCount", func(t *testing.T) {
+		count, err := db.AccountTransactionCount(account.ID, false, nil)
+		require.NoError(t, err, "AccountTransactionCount should succeed")
+		assert.Equal(t, 3, count, "Main account should have 3 transactions")
+
+		countWithSub, err := db.AccountTransactionCount(account.ID, true, nil)
+		require.NoError(t, err, "AccountTransactionCount with subaccounts should succeed")
+		assert.Equal(t, 4, countWithSub, "Total transactions should be 4")
+
+		// Test with date filtering
+		startDate := baseTime.Add(24 * time.Hour)
+		options := &LedgerOptions{
+			StartDate: &startDate,
+		}
+		filteredCount, err := db.AccountTransactionCount(account.ID, true, options)
+		require.NoError(t, err, "AccountTransactionCount with date filter should succeed")
+		assert.Equal(t, 3, filteredCount, "Should have 3 transactions after Jan 1")
+	})
+
+	// Test AllAccountBalances
+	t.Run("AllAccountBalances", func(t *testing.T) {
+		balances, err := db.AllAccountBalances()
+		require.NoError(t, err, "AllAccountBalances should succeed")
+
+		assert.Contains(t, balances, account.ID, "Should include main account")
+		assert.Contains(t, balances, childAccount.ID, "Should include child account")
+
+		assert.Equal(t, int64(5000), balances[account.ID].Amount, "Main account balance should be $50")
+		assert.Equal(t, int64(5000), balances[childAccount.ID].Amount, "Child account balance should be $50")
+	})
+
+	// Test LastTransactionDate
+	t.Run("LastTransactionDate", func(t *testing.T) {
+		lastDate, err := db.LastTransactionDate(account.ID, false)
+		require.NoError(t, err, "LastTransactionDate should succeed")
+		require.NotNil(t, lastDate, "Last transaction date should not be nil")
+		assert.Equal(t, baseTime.Add(72*time.Hour).Unix(), lastDate.Unix(), "Last transaction should be on Jan 4")
+
+		lastDateWithSub, err := db.LastTransactionDate(account.ID, true)
+		require.NoError(t, err, "LastTransactionDate with subaccounts should succeed")
+		require.NotNil(t, lastDateWithSub, "Last transaction date with subaccounts should not be nil")
+		assert.Equal(t, baseTime.Add(72*time.Hour).Unix(), lastDateWithSub.Unix(), "Last transaction should still be on Jan 4")
+	})
+
+	// Test pagination
+	t.Run("LedgerPagination", func(t *testing.T) {
+		// Get first 2 transactions
+		options := &LedgerOptions{
+			IncludeSubaccounts: true,
+			Limit:              &[]int{2}[0],
+			Offset:             &[]int{0}[0],
+		}
+		page1, err := db.AccountLedger(account.ID, options)
+		require.NoError(t, err, "First page should succeed")
+		assert.Len(t, page1, 2, "First page should have 2 entries")
+
+		// Get next 2 transactions
+		options.Offset = &[]int{2}[0]
+		page2, err := db.AccountLedger(account.ID, options)
+		require.NoError(t, err, "Second page should succeed")
+		assert.Len(t, page2, 2, "Second page should have 2 entries")
+
+		// Verify no overlap
+		assert.NotEqual(t, page1[0].Transaction.ID, page2[0].Transaction.ID, "Pages should not overlap")
+	})
+}
+
+func TestLedgerEdgeCases(t *testing.T) {
+	db := testDB(t)
+	assembly, account, _, party, _ := setupTestData(t, db)
+	_ = assembly
+
+	// Test with no transactions
+	t.Run("EmptyAccount", func(t *testing.T) {
+		balance, err := db.AccountBalance(account.ID, false)
+		require.NoError(t, err, "Empty account balance should succeed")
+		assert.Equal(t, int64(0), balance.Amount, "Empty account balance should be 0")
+
+		ledger, err := db.AccountLedger(account.ID, nil)
+		require.NoError(t, err, "Empty account ledger should succeed")
+		assert.Len(t, ledger, 0, "Empty ledger should have no entries")
+
+		lastDate, err := db.LastTransactionDate(account.ID, false)
+		require.NoError(t, err, "LastTransactionDate for empty account should succeed")
+		assert.Nil(t, lastDate, "Last transaction date should be nil for empty account")
+	})
+
+	// Test with receipts for enrichment
+	t.Run("LedgerEnrichmentWithReceipts", func(t *testing.T) {
+		// Create a receipt and deposit
+		receipt, err := db.CreateReceipt(party.ID, time.Now())
+		require.NoError(t, err, "Failed to create receipt")
+
+		deposit, err := db.CreateDeposit(account.ID, NewMoney(5000, CurrencyUSD), TransactionMethodElectronicTransfer, "Test deposit", time.Now())
+		require.NoError(t, err, "Failed to create deposit")
+
+		// Assign receipt to deposit
+		_, err = db.AssignReceiptToTransaction(receipt.ID, deposit.ID)
+		require.NoError(t, err, "Failed to assign receipt to transaction")
+
+		// Get ledger and verify enrichment
+		ledger, err := db.AccountLedger(account.ID, nil)
+		require.NoError(t, err, "AccountLedger should succeed")
+		require.Len(t, ledger, 1, "Should have one ledger entry")
+
+		assert.Equal(t, 1, ledger[0].ReceiptCount, "Should have 1 receipt")
+		assert.Equal(t, party.Name, *ledger[0].CustomerName, "Customer name should be set")
+	})
+
+	// Test currency consistency
+	t.Run("CurrencyConsistency", func(t *testing.T) {
+		// Create CAD account
+		cadAccount, err := db.CreateBankAccount("CAD Account", AccountTypeChecking, CurrencyCAD, nil, "CAD account", true)
+		require.NoError(t, err, "Failed to create CAD account")
+
+		// Create CAD transaction
+		_, err = db.CreateDeposit(cadAccount.ID, NewMoney(10000, CurrencyCAD), TransactionMethodElectronicTransfer, "CAD deposit", time.Now())
+		require.NoError(t, err, "Failed to create CAD deposit")
+
+		// Verify balance has correct currency
+		balance, err := db.AccountBalance(cadAccount.ID, false)
+		require.NoError(t, err, "CAD account balance should succeed")
+		assert.Equal(t, CurrencyCAD, balance.Currency, "Balance should have CAD currency")
+
+		// Verify ledger has correct currency
+		ledger, err := db.AccountLedger(cadAccount.ID, nil)
+		require.NoError(t, err, "CAD account ledger should succeed")
+		require.Len(t, ledger, 1, "Should have one ledger entry")
+		assert.Equal(t, CurrencyCAD, ledger[0].RunningBalance.Currency, "Running balance should have CAD currency")
+	})
+}

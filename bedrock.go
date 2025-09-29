@@ -130,6 +130,27 @@ type ExpenseItem struct {
 	Amount      Money
 }
 
+// LedgerEntry represents a single row in the ledger view
+type LedgerEntry struct {
+	Transaction    Transaction `json:"transaction"`
+	RunningBalance Money       `json:"running_balance"`
+
+	// Optional enriched data
+	CustomerName *string `json:"customer_name,omitempty"` // For receipts
+	PayeeName    *string `json:"payee_name,omitempty"`    // For withdrawals
+	ReceiptCount int     `json:"receipt_count,omitempty"` // Number of receipts in deposit
+	ExpenseCount int     `json:"expense_count,omitempty"` // Number of expenses in withdrawal
+}
+
+// LedgerOptions provides filtering and pagination options
+type LedgerOptions struct {
+	StartDate          *time.Time `json:"start_date,omitempty"`
+	EndDate            *time.Time `json:"end_date,omitempty"`
+	Limit              *int       `json:"limit,omitempty"`     // For pagination
+	Offset             *int       `json:"offset,omitempty"`    // For pagination
+	IncludeSubaccounts bool       `json:"include_subaccounts"` // Include child accounts
+}
+
 // Party represents contributors and vendors
 type Party struct {
 	Base
