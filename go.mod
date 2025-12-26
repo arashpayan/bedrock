@@ -1,6 +1,6 @@
-module bedrock
+module github.com/arashpayan/bedrock
 
-go 1.25.0
+go 1.25.4
 
 require (
 	github.com/Masterminds/squirrel v1.5.4
