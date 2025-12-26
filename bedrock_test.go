@@ -144,15 +144,15 @@ func TestAssemblyCRUD(t *testing.T) {
 
 	// Test duplicate assembly prevention (already tested in TestNew, but testing internal behavior)
 	t.Run("DuplicateAssemblyPrevention", func(t *testing.T) {
-		freshDb := testDB(t)
-		defer freshDb.Close()
+		freshDB := testDB(t)
+		defer freshDB.Close()
 
 		// First assembly should succeed (internal method for testing)
-		_, err := freshDb.createAssembly("First Assembly", pacific)
+		_, err := freshDB.createAssembly("First Assembly", pacific)
 		require.NoError(t, err, "First assembly creation should succeed")
 
 		// Second assembly should fail
-		_, err = freshDb.createAssembly("Second Assembly", pacific)
+		_, err = freshDB.createAssembly("Second Assembly", pacific)
 		assert.Error(t, err, "Expected error for duplicate assembly creation")
 	})
 
@@ -180,10 +180,10 @@ func TestAssemblyCRUD(t *testing.T) {
 
 	// Test Assembly retrieval with no assembly
 	t.Run("NoAssemblyFound", func(t *testing.T) {
-		emptyDb := testDB(t)
-		defer emptyDb.Close()
+		emptyDB := testDB(t)
+		defer emptyDB.Close()
 
-		_, err := emptyDb.Assembly()
+		_, err := emptyDB.Assembly()
 		assert.Error(t, err, "Expected error when no assembly exists")
 	})
 

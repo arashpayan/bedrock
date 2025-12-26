@@ -12,6 +12,69 @@ Bedrock is a Go library that provides simplified QuickBooks-like functionality s
 - Use `go fmt` for consistent formatting
 - Write clear, concise documentation for all exported functions
 
+### File Structure
+Functions, types, and methods should be organized alphabetically within files to improve discoverability and maintainability.
+
+**Ordering Rules:**
+1. **Type definitions** come first, in alphabetical order
+2. **Constructor functions** for a type come immediately after the type definition (in alphabetical order)
+3. **Methods** of a type come after constructors (in alphabetical order)
+4. **Package-level functions** come after all types and their methods (in alphabetical order)
+
+**Example:**
+```go
+type Cat struct {
+    Name string
+    Age  int
+}
+
+// Constructors come after type definition, alphabetically
+func catFromProto(pb *proto.Cat) Cat {
+    return Cat{Name: pb.Name, Age: int(pb.Age)}
+}
+
+func newCat(name string, age int) Cat {
+    return Cat{Name: name, Age: age}
+}
+
+// Methods come after constructors, alphabetically
+func (c Cat) Greet() string {
+    return "Meow, I'm " + c.Name
+}
+
+func (c Cat) Speak() string {
+    return "Meow!"
+}
+
+type Dog struct {
+    Name string
+}
+
+// Dog's methods immediately follow Dog type
+func (d Dog) Jump() {
+    // implementation
+}
+
+func (d Dog) String() string {
+    return d.Name
+}
+
+// Package-level functions come after all types, alphabetically
+func AnimalFunction() {
+    // implementation
+}
+
+func SomeOtherFunction() {
+    // implementation
+}
+```
+
+**Benefits:**
+- Easy to locate functions and methods
+- Reduces merge conflicts
+- Consistent across the codebase
+- No arbitrary or chronological ordering
+
 ## Key Design Decisions
 - Each `.bedrock` file contains data for a single Assembly (no cross-Assembly foreign keys needed)
 - Uses SQLite for persistence with file-based databases
