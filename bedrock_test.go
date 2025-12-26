@@ -1304,3 +1304,587 @@ func TestLedgerEdgeCases(t *testing.T) {
 		assert.Equal(t, CurrencyCAD, ledger[0].RunningBalance.Currency, "Running balance should have CAD currency")
 	})
 }
+
+func TestReconciliationCRUD(t *testing.T) {
+	// Test StartReconciliation
+	t.Run("StartReconciliation", func(t *testing.T) {
+		db := testDB(t)
+		_, account, _, _, _ := setupTestData(t, db)
+
+		statementDate := time.Date(2024, 1, 31, 23, 59, 59, 0, time.UTC)
+		statementBalance := NewMoney(10000, CurrencyUSD)
+
+		reconciliation, err := db.StartReconciliation(account.ID, statementDate, statementBalance)
+		require.NoError(t, err, "StartReconciliation should succeed")
+
+		assert.Equal(t, account.ID, reconciliation.AccountID)
+		assert.Equal(t, statementDate.Unix(), reconciliation.StatementDate.Unix())
+		assert.Equal(t, statementBalance.Amount, reconciliation.StatementBalance.Amount)
+		assert.Equal(t, statementBalance.Currency, reconciliation.StatementBalance.Currency)
+		assert.Equal(t, ReconciliationStatusInProgress, reconciliation.Status)
+		assert.Nil(t, reconciliation.CompletedAt)
+		assert.NotZero(t, reconciliation.ID)
+	})
+
+	// Test StartReconciliation on subaccount (should fail)
+	t.Run("StartReconciliationOnSubaccount", func(t *testing.T) {
+		db := testDB(t)
+		_, account, _, _, _ := setupTestData(t, db)
+
+		statementDate := time.Date(2024, 1, 31, 23, 59, 59, 0, time.UTC)
+		statementBalance := NewMoney(10000, CurrencyUSD)
+
+		childAccount, err := db.CreateBankAccount("Child Account", AccountTypeEarmark, CurrencyUSD, &account.ID, "Child", true)
+		require.NoError(t, err, "Failed to create child account")
+
+		_, err = db.StartReconciliation(childAccount.ID, statementDate, statementBalance)
+		assert.Error(t, err, "Expected error for reconciliation on subaccount")
+		assert.Contains(t, err.Error(), "root-level")
+	})
+
+	// Test StartReconciliation with currency mismatch
+	t.Run("StartReconciliationCurrencyMismatch", func(t *testing.T) {
+		db := testDB(t)
+		_, account, _, _, _ := setupTestData(t, db)
+
+		statementDate := time.Date(2024, 1, 31, 23, 59, 59, 0, time.UTC)
+		cadBalance := NewMoney(10000, CurrencyCAD)
+
+		_, err := db.StartReconciliation(account.ID, statementDate, cadBalance)
+		assert.Error(t, err, "Expected error for currency mismatch")
+	})
+
+	// Test duplicate in-progress reconciliation
+	t.Run("DuplicateInProgressReconciliation", func(t *testing.T) {
+		db := testDB(t)
+		_, account, _, _, _ := setupTestData(t, db)
+
+		statementDate := time.Date(2024, 1, 31, 23, 59, 59, 0, time.UTC)
+		statementBalance := NewMoney(10000, CurrencyUSD)
+
+		_, err := db.StartReconciliation(account.ID, statementDate, statementBalance)
+		require.NoError(t, err, "First reconciliation should succeed")
+
+		_, err = db.StartReconciliation(account.ID, statementDate, statementBalance)
+		assert.Error(t, err, "Expected error for duplicate in-progress reconciliation")
+		assert.Contains(t, err.Error(), "in-progress")
+	})
+
+	// Test Reconciliation retrieval
+	t.Run("ReconciliationRetrieval", func(t *testing.T) {
+		db := testDB(t)
+		_, account, _, _, _ := setupTestData(t, db)
+
+		statementDate := time.Date(2024, 1, 31, 23, 59, 59, 0, time.UTC)
+		statementBalance := NewMoney(10000, CurrencyUSD)
+
+		reconciliation, err := db.StartReconciliation(account.ID, statementDate, statementBalance)
+		require.NoError(t, err, "Failed to start reconciliation")
+
+		retrieved, err := db.Reconciliation(reconciliation.ID)
+		require.NoError(t, err, "Reconciliation retrieval should succeed")
+
+		assert.Equal(t, reconciliation.ID, retrieved.ID)
+		assert.Equal(t, reconciliation.AccountID, retrieved.AccountID)
+		assert.Equal(t, reconciliation.StatementBalance.Amount, retrieved.StatementBalance.Amount)
+	})
+
+	// Test InProgressReconciliation
+	t.Run("InProgressReconciliation", func(t *testing.T) {
+		db := testDB(t)
+		_, account, _, _, _ := setupTestData(t, db)
+
+		statementDate := time.Date(2024, 1, 31, 23, 59, 59, 0, time.UTC)
+		statementBalance := NewMoney(10000, CurrencyUSD)
+
+		reconciliation, err := db.StartReconciliation(account.ID, statementDate, statementBalance)
+		require.NoError(t, err, "Failed to start reconciliation")
+
+		inProgress, err := db.InProgressReconciliation(account.ID)
+		require.NoError(t, err, "InProgressReconciliation should succeed")
+
+		assert.Equal(t, reconciliation.ID, inProgress.ID)
+	})
+
+	// Test Reconciliations list
+	t.Run("ReconciliationsList", func(t *testing.T) {
+		db := testDB(t)
+		_, account, _, _, _ := setupTestData(t, db)
+
+		statementDate := time.Date(2024, 1, 31, 23, 59, 59, 0, time.UTC)
+		statementBalance := NewMoney(10000, CurrencyUSD)
+
+		// Create and cancel a reconciliation
+		reconciliation1, err := db.StartReconciliation(account.ID, statementDate, statementBalance)
+		require.NoError(t, err, "Failed to start reconciliation")
+		_, err = db.CancelReconciliation(reconciliation1.ID)
+		require.NoError(t, err, "Failed to cancel reconciliation")
+
+		// Create another one
+		_, err = db.StartReconciliation(account.ID, statementDate.AddDate(0, 1, 0), statementBalance)
+		require.NoError(t, err, "Failed to start second reconciliation")
+
+		reconciliations, err := db.Reconciliations(account.ID)
+		require.NoError(t, err, "Reconciliations should succeed")
+
+		assert.Equal(t, 2, len(reconciliations), "Should have 2 reconciliations")
+	})
+
+	// Test CancelReconciliation
+	t.Run("CancelReconciliation", func(t *testing.T) {
+		db := testDB(t)
+		_, account, _, _, _ := setupTestData(t, db)
+
+		statementDate := time.Date(2024, 1, 31, 23, 59, 59, 0, time.UTC)
+		statementBalance := NewMoney(10000, CurrencyUSD)
+
+		reconciliation, err := db.StartReconciliation(account.ID, statementDate, statementBalance)
+		require.NoError(t, err, "Failed to start reconciliation")
+
+		cancelled, err := db.CancelReconciliation(reconciliation.ID)
+		require.NoError(t, err, "CancelReconciliation should succeed")
+
+		assert.Equal(t, ReconciliationStatusCancelled, cancelled.Status)
+
+		// Verify can start a new one after cancellation
+		_, err = db.StartReconciliation(account.ID, statementDate, statementBalance)
+		require.NoError(t, err, "Should be able to start new reconciliation after cancellation")
+	})
+
+	// Test CancelReconciliation on completed (should fail)
+	t.Run("CancelCompletedReconciliation", func(t *testing.T) {
+		db := testDB(t)
+		_, account, _, _, _ := setupTestData(t, db)
+
+		statementDate := time.Date(2024, 1, 31, 23, 59, 59, 0, time.UTC)
+		statementBalance := NewMoney(10000, CurrencyUSD)
+
+		// Create transaction that matches statement balance
+		_, err := db.CreateDeposit(account.ID, statementBalance, TransactionMethodElectronicTransfer, "Test deposit", statementDate.Add(-24*time.Hour))
+		require.NoError(t, err, "Failed to create deposit")
+
+		reconciliation, err := db.StartReconciliation(account.ID, statementDate, statementBalance)
+		require.NoError(t, err, "Failed to start reconciliation")
+
+		// Clear all transactions
+		uncleared, err := db.UnclearedTransactions(account.ID, statementDate)
+		require.NoError(t, err, "Failed to get uncleared transactions")
+		for _, tx := range uncleared {
+			err = db.ClearTransaction(reconciliation.ID, tx.ID)
+			require.NoError(t, err, "Failed to clear transaction")
+		}
+
+		// Complete the reconciliation
+		completed, err := db.CompleteReconciliation(reconciliation.ID)
+		require.NoError(t, err, "CompleteReconciliation should succeed")
+		assert.Equal(t, ReconciliationStatusCompleted, completed.Status)
+
+		// Try to cancel it
+		_, err = db.CancelReconciliation(completed.ID)
+		assert.Error(t, err, "Expected error when cancelling completed reconciliation")
+	})
+
+	// Test ClearTransaction and UnclearTransaction
+	t.Run("ClearAndUnclearTransaction", func(t *testing.T) {
+		db := testDB(t)
+		_, account, _, _, _ := setupTestData(t, db)
+
+		statementDate := time.Date(2024, 1, 31, 23, 59, 59, 0, time.UTC)
+
+		// Create a deposit
+		deposit, err := db.CreateDeposit(account.ID, NewMoney(5000, CurrencyUSD), TransactionMethodElectronicTransfer, "Test deposit", statementDate.Add(-48*time.Hour))
+		require.NoError(t, err, "Failed to create deposit")
+
+		reconciliation, err := db.StartReconciliation(account.ID, statementDate, NewMoney(5000, CurrencyUSD))
+		require.NoError(t, err, "Failed to start reconciliation")
+
+		// Clear the transaction
+		err = db.ClearTransaction(reconciliation.ID, deposit.ID)
+		require.NoError(t, err, "ClearTransaction should succeed")
+
+		// Verify it's cleared
+		clearedTxs, err := db.ClearedTransactions(reconciliation.ID)
+		require.NoError(t, err, "ClearedTransactions should succeed")
+		assert.Len(t, clearedTxs, 1, "Should have 1 cleared transaction")
+		assert.Equal(t, deposit.ID, clearedTxs[0].ID)
+
+		// Unclear it
+		err = db.UnclearTransaction(deposit.ID)
+		require.NoError(t, err, "UnclearTransaction should succeed")
+
+		// Verify it's uncleared
+		clearedTxs, err = db.ClearedTransactions(reconciliation.ID)
+		require.NoError(t, err, "ClearedTransactions should succeed")
+		assert.Len(t, clearedTxs, 0, "Should have no cleared transactions")
+	})
+
+	// Test ClearTransaction validation
+	t.Run("ClearTransactionValidation", func(t *testing.T) {
+		db := testDB(t)
+		_, account, _, _, _ := setupTestData(t, db)
+
+		statementDate := time.Date(2024, 1, 31, 23, 59, 59, 0, time.UTC)
+
+		// Create account2 (different root account)
+		account2, err := db.CreateBankAccount("Account 2", AccountTypeChecking, CurrencyUSD, nil, "", true)
+		require.NoError(t, err, "Failed to create account2")
+
+		// Create deposit on account2
+		deposit, err := db.CreateDeposit(account2.ID, NewMoney(5000, CurrencyUSD), TransactionMethodElectronicTransfer, "Test", statementDate.Add(-24*time.Hour))
+		require.NoError(t, err, "Failed to create deposit")
+
+		reconciliation, err := db.StartReconciliation(account.ID, statementDate, NewMoney(5000, CurrencyUSD))
+		require.NoError(t, err, "Failed to start reconciliation")
+
+		// Try to clear transaction from different account
+		err = db.ClearTransaction(reconciliation.ID, deposit.ID)
+		assert.Error(t, err, "Expected error when clearing transaction from different account")
+
+		// Create transaction after statement date
+		futureDeposit, err := db.CreateDeposit(account.ID, NewMoney(1000, CurrencyUSD), TransactionMethodElectronicTransfer, "Future", statementDate.Add(24*time.Hour))
+		require.NoError(t, err, "Failed to create future deposit")
+
+		err = db.ClearTransaction(reconciliation.ID, futureDeposit.ID)
+		assert.Error(t, err, "Expected error when clearing transaction after statement date")
+	})
+
+	// Test ClearTransaction on child account
+	t.Run("ClearTransactionOnChildAccount", func(t *testing.T) {
+		db := testDB(t)
+		_, account, _, _, _ := setupTestData(t, db)
+
+		statementDate := time.Date(2024, 1, 31, 23, 59, 59, 0, time.UTC)
+
+		childAccount, err := db.CreateBankAccount("Earmark", AccountTypeEarmark, CurrencyUSD, &account.ID, "Earmark fund", true)
+		require.NoError(t, err, "Failed to create child account")
+
+		// Create deposit on child account
+		childDeposit, err := db.CreateDeposit(childAccount.ID, NewMoney(3000, CurrencyUSD), TransactionMethodElectronicTransfer, "Child deposit", statementDate.Add(-24*time.Hour))
+		require.NoError(t, err, "Failed to create child deposit")
+
+		reconciliation, err := db.StartReconciliation(account.ID, statementDate, NewMoney(3000, CurrencyUSD))
+		require.NoError(t, err, "Failed to start reconciliation")
+
+		// Should be able to clear transaction from child account
+		err = db.ClearTransaction(reconciliation.ID, childDeposit.ID)
+		require.NoError(t, err, "Should be able to clear transaction from child account")
+	})
+
+	// Test ClearedBalance
+	t.Run("ClearedBalance", func(t *testing.T) {
+		db := testDB(t)
+		_, account, _, _, _ := setupTestData(t, db)
+
+		statementDate := time.Date(2024, 1, 31, 23, 59, 59, 0, time.UTC)
+
+		// Create deposits
+		deposit1, err := db.CreateDeposit(account.ID, NewMoney(6000, CurrencyUSD), TransactionMethodElectronicTransfer, "Deposit 1", statementDate.Add(-72*time.Hour))
+		require.NoError(t, err, "Failed to create deposit")
+
+		deposit2, err := db.CreateDeposit(account.ID, NewMoney(4000, CurrencyUSD), TransactionMethodElectronicTransfer, "Deposit 2", statementDate.Add(-48*time.Hour))
+		require.NoError(t, err, "Failed to create deposit")
+
+		reconciliation, err := db.StartReconciliation(account.ID, statementDate, NewMoney(10000, CurrencyUSD))
+		require.NoError(t, err, "Failed to start reconciliation")
+
+		// Clear both transactions
+		err = db.ClearTransaction(reconciliation.ID, deposit1.ID)
+		require.NoError(t, err, "Failed to clear deposit1")
+		err = db.ClearTransaction(reconciliation.ID, deposit2.ID)
+		require.NoError(t, err, "Failed to clear deposit2")
+
+		// Check cleared balance
+		clearedBalance, err := db.ClearedBalance(reconciliation.ID)
+		require.NoError(t, err, "ClearedBalance should succeed")
+		assert.Equal(t, int64(10000), clearedBalance.Amount, "Cleared balance should be $100")
+		assert.Equal(t, CurrencyUSD, clearedBalance.Currency)
+	})
+
+	// Test UnclearedTransactions
+	t.Run("UnclearedTransactions", func(t *testing.T) {
+		db := testDB(t)
+		_, account, _, _, _ := setupTestData(t, db)
+
+		statementDate := time.Date(2024, 1, 31, 23, 59, 59, 0, time.UTC)
+
+		// Create deposits
+		deposit1, err := db.CreateDeposit(account.ID, NewMoney(2000, CurrencyUSD), TransactionMethodElectronicTransfer, "Uncleared 1", statementDate.Add(-24*time.Hour))
+		require.NoError(t, err, "Failed to create deposit")
+
+		deposit2, err := db.CreateDeposit(account.ID, NewMoney(3000, CurrencyUSD), TransactionMethodElectronicTransfer, "Uncleared 2", statementDate.Add(-12*time.Hour))
+		require.NoError(t, err, "Failed to create deposit")
+
+		// Create deposit after statement date (should not appear)
+		_, err = db.CreateDeposit(account.ID, NewMoney(1000, CurrencyUSD), TransactionMethodElectronicTransfer, "After statement", statementDate.Add(24*time.Hour))
+		require.NoError(t, err, "Failed to create future deposit")
+
+		uncleared, err := db.UnclearedTransactions(account.ID, statementDate)
+		require.NoError(t, err, "UnclearedTransactions should succeed")
+
+		assert.Len(t, uncleared, 2, "Should have 2 uncleared transactions")
+
+		// Find our test transactions
+		found1, found2 := false, false
+		for _, tx := range uncleared {
+			if tx.ID == deposit1.ID {
+				found1 = true
+			}
+			if tx.ID == deposit2.ID {
+				found2 = true
+			}
+		}
+		assert.True(t, found1, "Should include deposit1")
+		assert.True(t, found2, "Should include deposit2")
+	})
+
+	// Test CompleteReconciliation
+	t.Run("CompleteReconciliation", func(t *testing.T) {
+		db := testDB(t)
+		_, account, _, _, _ := setupTestData(t, db)
+
+		statementDate := time.Date(2024, 1, 31, 23, 59, 59, 0, time.UTC)
+
+		// Create deposit
+		deposit, err := db.CreateDeposit(account.ID, NewMoney(7500, CurrencyUSD), TransactionMethodElectronicTransfer, "For completion", statementDate.Add(-24*time.Hour))
+		require.NoError(t, err, "Failed to create deposit")
+
+		reconciliation, err := db.StartReconciliation(account.ID, statementDate, NewMoney(7500, CurrencyUSD))
+		require.NoError(t, err, "Failed to start reconciliation")
+
+		// Clear the deposit
+		err = db.ClearTransaction(reconciliation.ID, deposit.ID)
+		require.NoError(t, err, "Failed to clear transaction")
+
+		// Complete the reconciliation
+		completed, err := db.CompleteReconciliation(reconciliation.ID)
+		require.NoError(t, err, "CompleteReconciliation should succeed")
+
+		assert.Equal(t, ReconciliationStatusCompleted, completed.Status)
+		assert.NotNil(t, completed.CompletedAt)
+
+		// Verify LastCompletedReconciliation
+		last, err := db.LastCompletedReconciliation(account.ID)
+		require.NoError(t, err, "LastCompletedReconciliation should succeed")
+		assert.Equal(t, completed.ID, last.ID)
+	})
+
+	// Test CompleteReconciliation with balance mismatch
+	t.Run("CompleteReconciliationBalanceMismatch", func(t *testing.T) {
+		db := testDB(t)
+		_, account, _, _, _ := setupTestData(t, db)
+
+		statementDate := time.Date(2024, 1, 31, 23, 59, 59, 0, time.UTC)
+
+		// Create deposit
+		deposit, err := db.CreateDeposit(account.ID, NewMoney(5000, CurrencyUSD), TransactionMethodElectronicTransfer, "Mismatch test", statementDate.Add(-24*time.Hour))
+		require.NoError(t, err, "Failed to create deposit")
+
+		// Start reconciliation expecting $100 but we only have $50
+		reconciliation, err := db.StartReconciliation(account.ID, statementDate, NewMoney(10000, CurrencyUSD))
+		require.NoError(t, err, "Failed to start reconciliation")
+
+		// Clear transaction
+		err = db.ClearTransaction(reconciliation.ID, deposit.ID)
+		require.NoError(t, err, "Failed to clear transaction")
+
+		// Try to complete - should fail due to balance mismatch
+		_, err = db.CompleteReconciliation(reconciliation.ID)
+		assert.Error(t, err, "Expected error for balance mismatch")
+		assert.Contains(t, err.Error(), "does not match")
+	})
+
+	// Test UndoReconciliation
+	t.Run("UndoReconciliation", func(t *testing.T) {
+		db := testDB(t)
+		_, account, _, _, _ := setupTestData(t, db)
+
+		statementDate := time.Date(2024, 1, 31, 23, 59, 59, 0, time.UTC)
+
+		// Create and complete a reconciliation
+		deposit, err := db.CreateDeposit(account.ID, NewMoney(8000, CurrencyUSD), TransactionMethodElectronicTransfer, "For undo", statementDate.Add(-24*time.Hour))
+		require.NoError(t, err, "Failed to create deposit")
+
+		reconciliation, err := db.StartReconciliation(account.ID, statementDate, NewMoney(8000, CurrencyUSD))
+		require.NoError(t, err, "Failed to start reconciliation")
+
+		err = db.ClearTransaction(reconciliation.ID, deposit.ID)
+		require.NoError(t, err, "Failed to clear transaction")
+
+		completed, err := db.CompleteReconciliation(reconciliation.ID)
+		require.NoError(t, err, "Failed to complete reconciliation")
+
+		// Undo the reconciliation
+		err = db.UndoReconciliation(completed.ID)
+		require.NoError(t, err, "UndoReconciliation should succeed")
+
+		// Verify status changed to cancelled
+		undone, err := db.Reconciliation(completed.ID)
+		require.NoError(t, err, "Failed to get undone reconciliation")
+		assert.Equal(t, ReconciliationStatusCancelled, undone.Status)
+
+		// Verify transaction is uncleared
+		var tx Transaction
+		err = db.conn.Get(&tx, "SELECT * FROM transactions WHERE id = ?", deposit.ID)
+		require.NoError(t, err, "Failed to get transaction")
+		assert.Nil(t, tx.ReconciliationID, "Transaction should be uncleared after undo")
+	})
+
+	// Test UndoReconciliation only works on most recent
+	t.Run("UndoReconciliationOnlyMostRecent", func(t *testing.T) {
+		db := testDB(t)
+		_, account, _, _, _ := setupTestData(t, db)
+
+		statementDate := time.Date(2024, 1, 31, 23, 59, 59, 0, time.UTC)
+
+		// Create and complete first reconciliation
+		deposit1, err := db.CreateDeposit(account.ID, NewMoney(1000, CurrencyUSD), TransactionMethodElectronicTransfer, "First", statementDate.Add(-48*time.Hour))
+		require.NoError(t, err, "Failed to create deposit")
+
+		recon1, err := db.StartReconciliation(account.ID, statementDate.Add(-24*time.Hour), NewMoney(1000, CurrencyUSD))
+		require.NoError(t, err, "Failed to start reconciliation")
+
+		err = db.ClearTransaction(recon1.ID, deposit1.ID)
+		require.NoError(t, err, "Failed to clear transaction")
+
+		completed1, err := db.CompleteReconciliation(recon1.ID)
+		require.NoError(t, err, "Failed to complete reconciliation")
+
+		// Create and complete second reconciliation
+		deposit2, err := db.CreateDeposit(account.ID, NewMoney(2000, CurrencyUSD), TransactionMethodElectronicTransfer, "Second", statementDate.Add(-12*time.Hour))
+		require.NoError(t, err, "Failed to create deposit")
+
+		recon2, err := db.StartReconciliation(account.ID, statementDate, NewMoney(2000, CurrencyUSD))
+		require.NoError(t, err, "Failed to start reconciliation")
+
+		err = db.ClearTransaction(recon2.ID, deposit2.ID)
+		require.NoError(t, err, "Failed to clear transaction")
+
+		completed2, err := db.CompleteReconciliation(recon2.ID)
+		require.NoError(t, err, "Failed to complete reconciliation")
+
+		// Try to undo the first reconciliation (not most recent) - should fail
+		err = db.UndoReconciliation(completed1.ID)
+		assert.Error(t, err, "Expected error when undoing non-most-recent reconciliation")
+		assert.Contains(t, err.Error(), "most recent")
+
+		// Undo second (most recent) should work
+		err = db.UndoReconciliation(completed2.ID)
+		require.NoError(t, err, "Undo most recent should succeed")
+
+		// Now first becomes most recent, undo should work
+		err = db.UndoReconciliation(completed1.ID)
+		require.NoError(t, err, "Undo first should succeed after second is undone")
+	})
+
+	// Test UnclearTransaction from completed reconciliation (should fail)
+	t.Run("UnclearFromCompletedReconciliation", func(t *testing.T) {
+		db := testDB(t)
+		_, account, _, _, _ := setupTestData(t, db)
+
+		statementDate := time.Date(2024, 1, 31, 23, 59, 59, 0, time.UTC)
+
+		deposit, err := db.CreateDeposit(account.ID, NewMoney(1500, CurrencyUSD), TransactionMethodElectronicTransfer, "Test", statementDate.Add(-24*time.Hour))
+		require.NoError(t, err, "Failed to create deposit")
+
+		reconciliation, err := db.StartReconciliation(account.ID, statementDate, NewMoney(1500, CurrencyUSD))
+		require.NoError(t, err, "Failed to start reconciliation")
+
+		err = db.ClearTransaction(reconciliation.ID, deposit.ID)
+		require.NoError(t, err, "Failed to clear transaction")
+
+		_, err = db.CompleteReconciliation(reconciliation.ID)
+		require.NoError(t, err, "Failed to complete reconciliation")
+
+		// Try to unclear transaction from completed reconciliation
+		err = db.UnclearTransaction(deposit.ID)
+		assert.Error(t, err, "Expected error when unclearing from completed reconciliation")
+	})
+
+	// Test clearing already cleared transaction
+	t.Run("ClearAlreadyClearedTransaction", func(t *testing.T) {
+		db := testDB(t)
+		_, account, _, _, _ := setupTestData(t, db)
+
+		statementDate := time.Date(2024, 1, 31, 23, 59, 59, 0, time.UTC)
+
+		deposit, err := db.CreateDeposit(account.ID, NewMoney(500, CurrencyUSD), TransactionMethodElectronicTransfer, "Test", statementDate.Add(-24*time.Hour))
+		require.NoError(t, err, "Failed to create deposit")
+
+		reconciliation, err := db.StartReconciliation(account.ID, statementDate, NewMoney(500, CurrencyUSD))
+		require.NoError(t, err, "Failed to start reconciliation")
+
+		// Clear once
+		err = db.ClearTransaction(reconciliation.ID, deposit.ID)
+		require.NoError(t, err, "First clear should succeed")
+
+		// Clear again (same reconciliation) - should be idempotent
+		err = db.ClearTransaction(reconciliation.ID, deposit.ID)
+		require.NoError(t, err, "Clearing already cleared transaction in same reconciliation should be idempotent")
+
+		// Cancel and start new reconciliation
+		_, err = db.CancelReconciliation(reconciliation.ID)
+		require.NoError(t, err, "Failed to cancel reconciliation")
+
+		// After cancellation, transaction is uncleared
+		reconciliation2, err := db.StartReconciliation(account.ID, statementDate, NewMoney(500, CurrencyUSD))
+		require.NoError(t, err, "Failed to start second reconciliation")
+
+		// Clear it for the new reconciliation
+		err = db.ClearTransaction(reconciliation2.ID, deposit.ID)
+		require.NoError(t, err, "Clear should succeed after previous reconciliation cancelled")
+
+		// Complete reconciliation
+		_, err = db.CompleteReconciliation(reconciliation2.ID)
+		require.NoError(t, err, "Failed to complete reconciliation")
+
+		// Start new reconciliation and try to clear the already-reconciled transaction
+		_, err = db.CreateDeposit(account.ID, NewMoney(300, CurrencyUSD), TransactionMethodElectronicTransfer, "New", statementDate.Add(24*time.Hour))
+		require.NoError(t, err, "Failed to create deposit")
+
+		reconciliation3, err := db.StartReconciliation(account.ID, statementDate.AddDate(0, 1, 0), NewMoney(300, CurrencyUSD))
+		require.NoError(t, err, "Failed to start third reconciliation")
+
+		// Try to clear the already reconciled transaction
+		err = db.ClearTransaction(reconciliation3.ID, deposit.ID)
+		assert.Error(t, err, "Expected error when clearing transaction from completed reconciliation")
+	})
+
+	// Test with withdrawals
+	t.Run("ReconciliationWithWithdrawals", func(t *testing.T) {
+		db := testDB(t)
+		_, account, _, party, category := setupTestData(t, db)
+
+		statementDate := time.Date(2024, 1, 31, 23, 59, 59, 0, time.UTC)
+
+		// Create a deposit
+		deposit, err := db.CreateDeposit(account.ID, NewMoney(20000, CurrencyUSD), TransactionMethodElectronicTransfer, "Big deposit", statementDate.Add(-72*time.Hour))
+		require.NoError(t, err, "Failed to create deposit")
+
+		expenses := []ExpenseItem{
+			{CategoryID: category.ID, Description: strPtr("Expense"), Amount: NewMoney(5000, CurrencyUSD)},
+		}
+		withdrawal, err := db.CreateWithdrawal(account.ID, party.ID, TransactionMethodCheck, "Payment", statementDate.Add(-48*time.Hour), strPtr("100"), expenses)
+		require.NoError(t, err, "Failed to create withdrawal")
+
+		// Expected balance: 20000 - 5000 = 15000
+		reconciliation, err := db.StartReconciliation(account.ID, statementDate, NewMoney(15000, CurrencyUSD))
+		require.NoError(t, err, "Failed to start reconciliation")
+
+		// Clear both transactions
+		err = db.ClearTransaction(reconciliation.ID, deposit.ID)
+		require.NoError(t, err, "Failed to clear deposit")
+
+		err = db.ClearTransaction(reconciliation.ID, withdrawal.ID)
+		require.NoError(t, err, "Failed to clear withdrawal")
+
+		// Complete
+		completed, err := db.CompleteReconciliation(reconciliation.ID)
+		require.NoError(t, err, "CompleteReconciliation should succeed")
+		assert.Equal(t, ReconciliationStatusCompleted, completed.Status)
+
+		// Verify cleared balance
+		clearedBalance, err := db.ClearedBalance(completed.ID)
+		require.NoError(t, err, "ClearedBalance should succeed")
+		assert.Equal(t, int64(15000), clearedBalance.Amount, "Cleared balance should be $150 (200 - 50)")
+	})
+}

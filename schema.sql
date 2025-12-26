@@ -72,6 +72,19 @@ CREATE TABLE IF NOT EXISTS receipt_items (
     FOREIGN KEY (item_id) REFERENCES items(id)
 );
 
+CREATE TABLE IF NOT EXISTS reconciliations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    account_id INTEGER NOT NULL,
+    statement_date DATETIME NOT NULL,
+    statement_balance INTEGER NOT NULL,
+    statement_balance_currency TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'in-progress',
+    completed_at DATETIME,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    modified_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (account_id) REFERENCES bank_accounts(id)
+);
+
 CREATE TABLE IF NOT EXISTS transactions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     account_id INTEGER NOT NULL,
@@ -80,11 +93,13 @@ CREATE TABLE IF NOT EXISTS transactions (
     memo TEXT,
     method TEXT,
     payee_id INTEGER,
+    reconciliation_id INTEGER,
     transacted_at DATETIME NOT NULL,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     modified_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (account_id) REFERENCES bank_accounts(id),
-    FOREIGN KEY (payee_id) REFERENCES parties(id)
+    FOREIGN KEY (payee_id) REFERENCES parties(id),
+    FOREIGN KEY (reconciliation_id) REFERENCES reconciliations(id)
 );
 
 CREATE TABLE IF NOT EXISTS expenses (
@@ -153,4 +168,10 @@ CREATE TRIGGER IF NOT EXISTS update_expenses_modified_at
     AFTER UPDATE ON expenses
 BEGIN
     UPDATE expenses SET modified_at = CURRENT_TIMESTAMP WHERE id = NEW.id;
+END;
+
+CREATE TRIGGER IF NOT EXISTS update_reconciliations_modified_at
+    AFTER UPDATE ON reconciliations
+BEGIN
+    UPDATE reconciliations SET modified_at = CURRENT_TIMESTAMP WHERE id = NEW.id;
 END;

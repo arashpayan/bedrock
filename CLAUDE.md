@@ -115,6 +115,10 @@ func SomeOtherFunction() {
 - `LedgerEntry` - represents a single row in a ledger view with transaction data and running balance
 - `LedgerOptions` - provides filtering and pagination options for ledger queries
 
+### Reconciliation
+- `ReconciliationStatus` - type-safe constants (in-progress, completed, cancelled)
+- `Reconciliation` - represents a bank account reconciliation session with statement date, balance, and status
+
 ### People & Entities
 - `Party` - represents both contributors and vendors with optional contact information (email, Bahá'í ID, address, phone)
 
@@ -138,7 +142,9 @@ func SomeOtherFunction() {
 - **Transaction → BankAccount**: Many-to-One (transactions belong to specific accounts)
 - **Transaction → Party**: Many-to-One (withdrawal transactions have payees)
 - **Transaction → Expense**: One-to-Many (withdrawal transactions contain multiple expense line items)
+- **Transaction → Reconciliation**: Many-to-One (cleared transactions belong to a reconciliation)
 - **Expense → Category**: Many-to-One (expenses belong to specific categories)
+- **Reconciliation → BankAccount**: Many-to-One (reconciliations belong to root-level accounts only)
 
 ## Database Schema
 Schema is defined in `schema.sql` and embedded into the Go binary using `//go:embed`. Complete schema includes:
@@ -149,7 +155,8 @@ Schema is defined in `schema.sql` and embedded into the Go binary using `//go:em
 - `parties` table - contributors and vendors with optional contact fields (email, Bahá'í ID, address, phone)
 - `receipts` table - contribution receipts with customer_id (Party FK) and transaction_id foreign key (nullable)
 - `receipt_items` table - line items with receipt_id and item_id foreign keys, price and currency
-- `transactions` table - all deposits and withdrawals with account_id and optional payee_id foreign keys
+- `reconciliations` table - reconciliation sessions with account_id, statement date/balance, status, and completion timestamp
+- `transactions` table - all deposits and withdrawals with account_id, optional payee_id, and optional reconciliation_id foreign keys
 - `expenses` table - expense line items with transaction_id and category_id foreign keys, amount and optional description
 - Automatic timestamp triggers for modified_at updates on all tables
 - Foreign key constraints enabled for data integrity
@@ -198,6 +205,7 @@ defer db.Close()
   - **BankAccount CRUD**: CreateBankAccount, BankAccount, BankAccountByName, RootBankAccounts, ChildBankAccounts, BankAccounts, ActiveBankAccounts, UpdateBankAccount, DeactivateBankAccount, DeleteBankAccount
   - **Transaction CRUD**: CreateDeposit, CreateWithdrawal (with expense categorization and currency validation)
   - **Ledger Operations**: AccountLedger, AccountBalance, AccountBalanceAsOf, TransactionsForAccount, AccountTransactionCount, AllAccountBalances, LastTransactionDate
+  - **Reconciliation Operations**: StartReconciliation, Reconciliation, Reconciliations, InProgressReconciliation, LastCompletedReconciliation, ClearTransaction, UnclearTransaction, ClearedTransactions, ClearedBalance, UnclearedTransactions, CompleteReconciliation, CancelReconciliation, UndoReconciliation
 
 ## Advanced Features Implemented
 - **Database Initialization**: `bedrock.New()` creates new databases with automatic Assembly setup and timezone configuration
@@ -210,6 +218,7 @@ defer db.Close()
 - **Referential Integrity**: Prevents deletion of entities with dependencies (accounts with children/transactions, receipts with items, categories with expenses)
 - **Single Assembly Per Database**: Each `.bedrock` file contains exactly one Assembly with proper validation
 - **Workflow Support**: Undeposited receipts tracking, transaction assignment, hierarchical account queries, expense breakdowns
+- **Bank Reconciliation**: Complete reconciliation workflow with transaction clearing, balance verification, undo support, and historical tracking
 - **Performance Optimization**: Efficient SQL queries with pagination, date filtering, and recursive account tree traversal
 - **Idiomatic Go API**: All method names follow Go conventions (e.g., `Item()` instead of `GetItem()`) per Google Go Style Guide
 - **Embedded Schema**: Database schema stored in `schema.sql` and embedded using `//go:embed` for clean separation of concerns
@@ -227,14 +236,31 @@ defer db.Close()
 3. **Make Withdrawals** - Create withdrawal transactions with one or more expense items categorizing the spending
 4. **Automatic Validation** - System ensures all expenses use consistent currency and sum to the withdrawal total
 
+## Reconciliation Workflow
+Reconciliation matches transactions in Bedrock with bank statements to guard against bookkeeping mistakes and fraudulent activity.
+
+1. **Start Reconciliation** - Begin a reconciliation session for a root-level account with the statement date and ending balance
+2. **Clear Transactions** - Mark transactions that appear on the bank statement as cleared
+3. **Verify Balance** - The system validates that cleared transactions sum to the statement balance
+4. **Complete or Cancel** - Finalize the reconciliation when balanced, or cancel to abandon
+5. **Undo if Needed** - Only the most recent completed reconciliation can be undone to maintain data consistency
+
+**Key Constraints:**
+- Reconciliation is only allowed for root-level accounts (not subaccounts)
+- Transactions from subaccounts can be cleared against the parent account's reconciliation
+- Only one in-progress reconciliation per account at a time
+- Transactions dated after the statement date cannot be cleared
+- Only the most recent completed reconciliation can be undone
+
 ## Testing
 ✅ **Comprehensive test suite implemented** using `github.com/stretchr/testify` for enhanced assertions
-- **160+ test cases** covering all CRUD operations and edge cases
+- **180+ test cases** covering all CRUD operations and edge cases
 - **Database isolation**: Each test uses temporary databases for clean state
 - **Error case testing**: Validation errors, constraint violations, referential integrity
 - **Workflow testing**: Receipt-to-transaction assignment, hierarchical accounts, currency validation, expense categorization
 - **Expense validation testing**: Currency mismatches, mixed currencies, zero amounts, foreign key constraints
 - **Ledger functionality testing**: Running balances, hierarchical account aggregation, date filtering, pagination
+- **Reconciliation testing**: Start/complete/cancel/undo workflows, transaction clearing, balance verification, constraint validation
 - **Type safety testing**: Money type precision, currency handling, string formatting
 
 ## Usage Examples
@@ -297,6 +323,49 @@ allBalances, err := db.AllAccountBalances()
 for accountID, balance := range allBalances {
     fmt.Printf("Account %d: %s\n", accountID, balance.String())
 }
+```
+
+### Bank Account Reconciliation
+```go
+// Start a reconciliation session with the bank statement details
+statementDate := time.Date(2024, 1, 31, 23, 59, 59, 0, time.UTC)
+statementBalance := NewMoney(150000, CurrencyUSD) // $1,500.00
+
+reconciliation, err := db.StartReconciliation(accountID, statementDate, statementBalance)
+if err != nil {
+    // handle error (e.g., account is a subaccount, or reconciliation already in progress)
+}
+
+// Get uncleared transactions up to the statement date
+uncleared, err := db.UnclearedTransactions(accountID, statementDate)
+for _, tx := range uncleared {
+    fmt.Printf("%s | %s | %d cents\n", 
+        tx.TransactedAt.Format("2006-01-02"), tx.Memo, tx.Amount)
+}
+
+// Clear transactions that appear on the bank statement
+for _, tx := range transactionsOnStatement {
+    err := db.ClearTransaction(reconciliation.ID, tx.ID)
+    if err != nil {
+        // handle error
+    }
+}
+
+// Check current cleared balance
+clearedBalance, err := db.ClearedBalance(reconciliation.ID)
+fmt.Printf("Cleared balance: %s (statement: %s)\n", 
+    clearedBalance.String(), statementBalance.String())
+
+// Complete the reconciliation (validates balance matches)
+completed, err := db.CompleteReconciliation(reconciliation.ID)
+if err != nil {
+    // Balance mismatch - investigate discrepancy
+    fmt.Printf("Reconciliation failed: %v\n", err)
+    // Can cancel to abandon: db.CancelReconciliation(reconciliation.ID)
+}
+
+// If a mistake is discovered, undo the most recent reconciliation
+err = db.UndoReconciliation(completed.ID)
 ```
 
 ## Next Steps (Suggested)

@@ -161,6 +161,50 @@ type Party struct {
 	TelephoneNumber *string `db:"telephone_number"` // optional telephone number
 }
 
+// ReconciliationStatus represents the state of a reconciliation session
+type ReconciliationStatus string
+
+const (
+	ReconciliationStatusInProgress ReconciliationStatus = "in-progress"
+	ReconciliationStatusCompleted  ReconciliationStatus = "completed"
+	ReconciliationStatusCancelled  ReconciliationStatus = "cancelled"
+)
+
+// Reconciliation represents a bank account reconciliation session
+type Reconciliation struct {
+	Base
+	AccountID        ID                   `db:"account_id"`     // bank account being reconciled
+	StatementDate    time.Time            `db:"statement_date"` // ending date of the bank statement
+	StatementBalance Money                `db:"-"`              // ending balance per the bank statement
+	Status           ReconciliationStatus `db:"status"`         // in-progress, completed, or cancelled
+	CompletedAt      *time.Time           `db:"completed_at"`   // when reconciliation was finalized
+}
+
+// reconciliationRow is used for database scanning with flat fields
+type reconciliationRow struct {
+	Base
+	AccountID                ID                   `db:"account_id"`
+	StatementDate            time.Time            `db:"statement_date"`
+	StatementBalance         int64                `db:"statement_balance"`
+	StatementBalanceCurrency Currency             `db:"statement_balance_currency"`
+	Status                   ReconciliationStatus `db:"status"`
+	CompletedAt              *time.Time           `db:"completed_at"`
+}
+
+func (r reconciliationRow) toReconciliation() Reconciliation {
+	return Reconciliation{
+		Base:          r.Base,
+		AccountID:     r.AccountID,
+		StatementDate: r.StatementDate,
+		StatementBalance: Money{
+			Amount:   r.StatementBalance,
+			Currency: r.StatementBalanceCurrency,
+		},
+		Status:      r.Status,
+		CompletedAt: r.CompletedAt,
+	}
+}
+
 // TransactionMethod represents how a transaction was performed
 type TransactionMethod string
 
@@ -175,13 +219,14 @@ const (
 // Transaction represents a deposit or withdrawal in a bank account
 type Transaction struct {
 	Base
-	AccountID    ID                 `db:"account_id"`    // bank account for this transaction
-	Amount       int64              `db:"amount"`        // positive for deposits, negative for withdrawals (in cents)
-	CheckNumber  *string            `db:"check_number"`  // check number if withdrawal by check
-	Memo         string             `db:"memo"`          // treasurer's notes
-	Method       *TransactionMethod `db:"method"`        // how the transaction was performed
-	PayeeID      *ID                `db:"payee_id"`      // foreign key to Party if this is a payment
-	TransactedAt time.Time          `db:"transacted_at"` // when the transaction occurred
+	AccountID        ID                 `db:"account_id"`        // bank account for this transaction
+	Amount           int64              `db:"amount"`            // positive for deposits, negative for withdrawals (in cents)
+	CheckNumber      *string            `db:"check_number"`      // check number if withdrawal by check
+	Memo             string             `db:"memo"`              // treasurer's notes
+	Method           *TransactionMethod `db:"method"`            // how the transaction was performed
+	PayeeID          *ID                `db:"payee_id"`          // foreign key to Party if this is a payment
+	ReconciliationID *ID                `db:"reconciliation_id"` // foreign key to Reconciliation if cleared
+	TransactedAt     time.Time          `db:"transacted_at"`     // when the transaction occurred
 }
 
 // DB represents the database connection and operations
