@@ -39,11 +39,11 @@ func setupTestData(t *testing.T, db *DB) (assembly *Assembly, account *BankAccou
 	t.Helper()
 
 	// Create assembly
-	assembly, err := db.createAssembly("Test Assembly", time.UTC)
+	assembly, err := db.createAssembly("Test Assembly", time.UTC, CurrencyUSD)
 	require.NoError(t, err, "Failed to create test assembly")
 
 	// Create test bank account
-	account, err = db.CreateBankAccount("Test Checking", AccountTypeChecking, CurrencyUSD, nil, "Test account", true)
+	account, err = db.CreateBankAccount("Test Checking", AccountTypeChecking, CurrencyUSD, nil, "Test account", true, Money{})
 	require.NoError(t, err, "Failed to create test bank account")
 
 	// Create test item
@@ -92,7 +92,7 @@ func TestNew(t *testing.T) {
 		eastern, err := time.LoadLocation("America/New_York")
 		require.NoError(t, err, "Failed to load timezone")
 
-		db, err := New(dbPath, "Test Spiritual Assembly", eastern)
+		db, err := New(dbPath, "Test Spiritual Assembly", eastern, CurrencyUSD)
 		require.NoError(t, err, "New should succeed")
 		defer db.Close()
 
@@ -101,21 +101,29 @@ func TestNew(t *testing.T) {
 		require.NoError(t, err, "Should be able to retrieve assembly")
 		assert.Equal(t, "Test Spiritual Assembly", assembly.Name)
 		assert.Equal(t, "America/New_York", assembly.Timezone.String())
+		assert.Equal(t, CurrencyUSD, assembly.DefaultCurrency)
 		assert.NotZero(t, assembly.ID)
 	})
 
 	// Test with empty assembly name
 	t.Run("EmptyAssemblyName", func(t *testing.T) {
 		dbPath := filepath.Join(tmpDir, "empty_name.bedrock")
-		_, err := New(dbPath, "", time.UTC)
+		_, err := New(dbPath, "", time.UTC, CurrencyUSD)
 		assert.Error(t, err, "Expected error for empty assembly name")
 	})
 
 	// Test with nil timezone
 	t.Run("NilTimezone", func(t *testing.T) {
 		dbPath := filepath.Join(tmpDir, "nil_timezone.bedrock")
-		_, err := New(dbPath, "Test Assembly", nil)
+		_, err := New(dbPath, "Test Assembly", nil, CurrencyUSD)
 		assert.Error(t, err, "Expected error for nil timezone")
+	})
+
+	// Test with invalid currency
+	t.Run("InvalidCurrency", func(t *testing.T) {
+		dbPath := filepath.Join(tmpDir, "invalid_currency.bedrock")
+		_, err := New(dbPath, "Test Assembly", time.UTC, Currency("EUR"))
+		assert.Error(t, err, "Expected error for invalid currency")
 	})
 }
 
@@ -128,7 +136,7 @@ func TestAssemblyCRUD(t *testing.T) {
 		tmpDir := t.TempDir()
 		dbPath := filepath.Join(tmpDir, "test.bedrock")
 
-		db, err := New(dbPath, "Local Spiritual Assembly of Test City", pacific)
+		db, err := New(dbPath, "Local Spiritual Assembly of Test City", pacific, CurrencyCAD)
 		require.NoError(t, err, "bedrock.New should succeed")
 		defer db.Close()
 
@@ -138,6 +146,7 @@ func TestAssemblyCRUD(t *testing.T) {
 		assert.NotZero(t, assembly.ID, "Assembly ID should not be zero")
 		assert.Equal(t, "Local Spiritual Assembly of Test City", assembly.Name)
 		assert.Equal(t, "America/Los_Angeles", assembly.Timezone.String())
+		assert.Equal(t, CurrencyCAD, assembly.DefaultCurrency)
 		assert.NotZero(t, assembly.CreatedAt)
 		assert.NotZero(t, assembly.ModifiedAt)
 	})
@@ -148,11 +157,11 @@ func TestAssemblyCRUD(t *testing.T) {
 		defer freshDB.Close()
 
 		// First assembly should succeed (internal method for testing)
-		_, err := freshDB.createAssembly("First Assembly", pacific)
+		_, err := freshDB.createAssembly("First Assembly", pacific, CurrencyUSD)
 		require.NoError(t, err, "First assembly creation should succeed")
 
 		// Second assembly should fail
-		_, err = freshDB.createAssembly("Second Assembly", pacific)
+		_, err = freshDB.createAssembly("Second Assembly", pacific, CurrencyUSD)
 		assert.Error(t, err, "Expected error for duplicate assembly creation")
 	})
 
@@ -165,7 +174,7 @@ func TestAssemblyCRUD(t *testing.T) {
 		require.NoError(t, err, "Failed to load timezone")
 
 		// Create database with assembly via New
-		db, err := New(dbPath, "Test Assembly for Retrieval", eastern)
+		db, err := New(dbPath, "Test Assembly for Retrieval", eastern, CurrencyUSD)
 		require.NoError(t, err, "Failed to create database")
 		defer db.Close()
 
@@ -175,6 +184,7 @@ func TestAssemblyCRUD(t *testing.T) {
 
 		assert.Equal(t, "Test Assembly for Retrieval", retrieved.Name)
 		assert.Equal(t, "America/New_York", retrieved.Timezone.String())
+		assert.Equal(t, CurrencyUSD, retrieved.DefaultCurrency)
 		assert.NotZero(t, retrieved.ID)
 	})
 
@@ -196,7 +206,7 @@ func TestAssemblyCRUD(t *testing.T) {
 		require.NoError(t, err, "Failed to load timezone")
 
 		// Create database with assembly via New
-		db, err := New(dbPath, "Original Name", time.UTC)
+		db, err := New(dbPath, "Original Name", time.UTC, CurrencyUSD)
 		require.NoError(t, err, "Failed to create database")
 		defer db.Close()
 
@@ -204,17 +214,19 @@ func TestAssemblyCRUD(t *testing.T) {
 		time.Sleep(time.Millisecond)
 
 		// Update assembly
-		updated, err := db.UpdateAssembly("Updated Name", central)
+		updated, err := db.UpdateAssembly("Updated Name", central, CurrencyCAD)
 		require.NoError(t, err, "UpdateAssembly should succeed")
 
 		assert.Equal(t, "Updated Name", updated.Name)
 		assert.Equal(t, "America/Chicago", updated.Timezone.String())
+		assert.Equal(t, CurrencyCAD, updated.DefaultCurrency)
 
 		// Verify the update persisted
 		retrieved, err := db.Assembly()
 		require.NoError(t, err, "Should be able to retrieve updated assembly")
 		assert.Equal(t, "Updated Name", retrieved.Name)
 		assert.Equal(t, "America/Chicago", retrieved.Timezone.String())
+		assert.Equal(t, CurrencyCAD, retrieved.DefaultCurrency)
 	})
 }
 
@@ -226,11 +238,11 @@ func TestMoneyType(t *testing.T) {
 		expectedStr   string
 		expectedFloat float64
 	}{
-		{"USD dollars", 1000, CurrencyUSD, "10.00 USD", 10.00},
-		{"USD cents", 199, CurrencyUSD, "1.99 USD", 1.99},
-		{"CAD", 2550, CurrencyCAD, "25.50 CAD", 25.50},
-		{"Zero", 0, CurrencyUSD, "0.00 USD", 0.00},
-		{"Large amount", 1234567, CurrencyUSD, "12345.67 USD", 12345.67},
+		{"USD dollars", 1000, CurrencyUSD, "$10.00", 10.00},
+		{"USD cents", 199, CurrencyUSD, "$1.99", 1.99},
+		{"CAD", 2550, CurrencyCAD, "$25.50", 25.50},
+		{"Zero", 0, CurrencyUSD, "$0.00", 0.00},
+		{"Large amount", 1234567, CurrencyUSD, "$12345.67", 12345.67},
 	}
 
 	for _, tt := range tests {
@@ -554,7 +566,7 @@ func TestBankAccountCRUD(t *testing.T) {
 
 	// Test CreateBankAccount
 	t.Run("CreateBankAccount", func(t *testing.T) {
-		account, err := db.CreateBankAccount("Main Checking", AccountTypeChecking, CurrencyUSD, nil, "Primary checking account", true)
+		account, err := db.CreateBankAccount("Main Checking", AccountTypeChecking, CurrencyUSD, nil, "Primary checking account", true, Money{})
 		require.NoError(t, err, "CreateBankAccount should succeed")
 
 		assert.Equal(t, "Main Checking", account.Name)
@@ -567,28 +579,116 @@ func TestBankAccountCRUD(t *testing.T) {
 
 	// Test CreateBankAccount with empty name
 	t.Run("CreateBankAccountEmptyName", func(t *testing.T) {
-		_, err := db.CreateBankAccount("", AccountTypeChecking, CurrencyUSD, nil, "", true)
+		_, err := db.CreateBankAccount("", AccountTypeChecking, CurrencyUSD, nil, "", true, Money{})
 		assert.Error(t, err, "Expected error for empty name")
 	})
 
+	// Test CreateBankAccount earmark without parent
+	t.Run("CreateEarmarkWithoutParent", func(t *testing.T) {
+		_, err := db.CreateBankAccount("Orphan Earmark", AccountTypeEarmark, CurrencyUSD, nil, "", true, Money{})
+		assert.Error(t, err, "Expected error for earmark without parent")
+		assert.Contains(t, err.Error(), "must have a parent")
+	})
+
 	// Create accounts for hierarchy tests
-	parentAccount, err := db.CreateBankAccount("Parent Account", AccountTypeChecking, CurrencyUSD, nil, "Parent account", true)
+	parentAccount, err := db.CreateBankAccount("Parent Account", AccountTypeChecking, CurrencyUSD, nil, "Parent account", true, Money{})
 	require.NoError(t, err, "Failed to create parent account")
 
 	// Test CreateBankAccount with parent
 	t.Run("CreateBankAccountWithParent", func(t *testing.T) {
-		childAccount, err := db.CreateBankAccount("Child Account", AccountTypeEarmark, CurrencyUSD, &parentAccount.ID, "Child account", true)
+		childAccount, err := db.CreateBankAccount("Child Account", AccountTypeEarmark, CurrencyUSD, &parentAccount.ID, "Child account", true, Money{})
 		require.NoError(t, err, "CreateBankAccount with parent should succeed")
 
 		require.NotNil(t, childAccount.ParentID)
 		assert.Equal(t, parentAccount.ID, *childAccount.ParentID)
 	})
 
+	// Test CreateBankAccount earmark with earmark parent (should fail)
+	t.Run("CreateEarmarkWithEarmarkParent", func(t *testing.T) {
+		// First create an earmark under the checking account
+		earmark1, err := db.CreateBankAccount("Earmark 1", AccountTypeEarmark, CurrencyUSD, &parentAccount.ID, "", true, Money{})
+		require.NoError(t, err)
+
+		// Try to create another earmark under the first earmark (should fail)
+		_, err = db.CreateBankAccount("Earmark 2", AccountTypeEarmark, CurrencyUSD, &earmark1.ID, "", true, Money{})
+		assert.Error(t, err, "Expected error for earmark with earmark parent")
+		assert.Contains(t, err.Error(), "checking or savings parent")
+	})
+
+	// Test CreateBankAccount sub-account with mismatched currency (should fail)
+	t.Run("CreateSubAccountCurrencyMismatch", func(t *testing.T) {
+		// Parent is USD, try to create CAD sub-account
+		_, err := db.CreateBankAccount("CAD Earmark", AccountTypeEarmark, CurrencyCAD, &parentAccount.ID, "", true, Money{})
+		assert.Error(t, err, "Expected error for currency mismatch")
+		assert.Contains(t, err.Error(), "same currency as their parent")
+	})
+
+	// Test non-earmark account with parent (should fail)
+	t.Run("CreateNonEarmarkWithParent", func(t *testing.T) {
+		// Try to create a checking account with a parent (should fail)
+		_, err := db.CreateBankAccount("Sub Checking", AccountTypeChecking, CurrencyUSD, &parentAccount.ID, "", true, Money{})
+		assert.Error(t, err, "Expected error for non-earmark with parent")
+		assert.Contains(t, err.Error(), "only earmark accounts can have a parent")
+
+		// Try to create a savings account with a parent (should fail)
+		_, err = db.CreateBankAccount("Sub Savings", AccountTypeSavings, CurrencyUSD, &parentAccount.ID, "", true, Money{})
+		assert.Error(t, err, "Expected error for non-earmark with parent")
+		assert.Contains(t, err.Error(), "only earmark accounts can have a parent")
+	})
+
 	// Test CreateBankAccount with invalid parent
 	t.Run("CreateBankAccountInvalidParent", func(t *testing.T) {
 		invalidParentID := ID(99999)
-		_, err := db.CreateBankAccount("Invalid Parent", AccountTypeEarmark, CurrencyUSD, &invalidParentID, "", true)
+		_, err := db.CreateBankAccount("Invalid Parent", AccountTypeEarmark, CurrencyUSD, &invalidParentID, "", true, Money{})
 		assert.Error(t, err, "Expected error for invalid parent ID")
+	})
+
+	// Test CreateBankAccount with opening balance
+	t.Run("CreateBankAccountWithOpeningBalance", func(t *testing.T) {
+		openingBalance := NewMoney(150000, CurrencyUSD) // $1,500.00
+		account, err := db.CreateBankAccount("Opening Balance Account", AccountTypeChecking, CurrencyUSD, nil, "", true, openingBalance)
+		require.NoError(t, err, "CreateBankAccount with opening balance should succeed")
+
+		// Verify the opening balance transaction was created
+		balance, err := db.AccountBalance(account.ID, false)
+		require.NoError(t, err, "AccountBalance should succeed")
+		assert.Equal(t, int64(150000), balance.Amount, "Balance should equal opening balance")
+		assert.Equal(t, CurrencyUSD, balance.Currency, "Currency should match")
+
+		// Verify the transaction exists with correct memo
+		transactions, err := db.TransactionsForAccount(account.ID, false, nil)
+		require.NoError(t, err, "TransactionsForAccount should succeed")
+		require.Len(t, transactions, 1, "Should have exactly one transaction")
+		assert.Equal(t, "Opening Balance", transactions[0].Memo, "Transaction memo should be 'Opening Balance'")
+		assert.Equal(t, int64(150000), transactions[0].Amount, "Transaction amount should match opening balance")
+	})
+
+	// Test CreateBankAccount with opening balance currency mismatch
+	t.Run("CreateBankAccountOpeningBalanceCurrencyMismatch", func(t *testing.T) {
+		openingBalance := NewMoney(10000, CurrencyCAD) // CAD balance for USD account
+		_, err := db.CreateBankAccount("Currency Mismatch", AccountTypeChecking, CurrencyUSD, nil, "", true, openingBalance)
+		assert.Error(t, err, "Expected error for opening balance currency mismatch")
+		assert.Contains(t, err.Error(), "does not match account currency")
+	})
+
+	// Test CreateBankAccount with negative opening balance
+	t.Run("CreateBankAccountNegativeOpeningBalance", func(t *testing.T) {
+		openingBalance := Money{Amount: -10000, Currency: CurrencyUSD}
+		_, err := db.CreateBankAccount("Negative Balance", AccountTypeChecking, CurrencyUSD, nil, "", true, openingBalance)
+		assert.Error(t, err, "Expected error for negative opening balance")
+		assert.Contains(t, err.Error(), "cannot be negative")
+	})
+
+	// Test CreateBankAccount earmark with opening balance
+	t.Run("CreateEarmarkWithOpeningBalance", func(t *testing.T) {
+		openingBalance := NewMoney(50000, CurrencyUSD) // $500.00
+		earmark, err := db.CreateBankAccount("Earmark With Balance", AccountTypeEarmark, CurrencyUSD, &parentAccount.ID, "", true, openingBalance)
+		require.NoError(t, err, "CreateBankAccount earmark with opening balance should succeed")
+
+		// Verify the opening balance transaction was created
+		balance, err := db.AccountBalance(earmark.ID, false)
+		require.NoError(t, err, "AccountBalance should succeed")
+		assert.Equal(t, int64(50000), balance.Amount, "Balance should equal opening balance")
 	})
 
 	// Test BankAccount retrieval
@@ -668,7 +768,7 @@ func TestBankAccountCRUD(t *testing.T) {
 	// Test DeactivateBankAccount
 	t.Run("DeactivateBankAccount", func(t *testing.T) {
 		// Create a new account to deactivate
-		account, err := db.CreateBankAccount("To Deactivate", AccountTypeChecking, CurrencyUSD, nil, "", true)
+		account, err := db.CreateBankAccount("To Deactivate", AccountTypeChecking, CurrencyUSD, nil, "", true, Money{})
 		require.NoError(t, err, "Failed to create account")
 
 		deactivated, err := db.DeactivateBankAccount(account.ID)
@@ -930,7 +1030,7 @@ func TestExpenseValidation(t *testing.T) {
 	// Test currency mismatch between expenses and account
 	t.Run("ExpenseCurrencyMismatch", func(t *testing.T) {
 		// Create CAD account
-		cadAccount, err := db.CreateBankAccount("CAD Account", AccountTypeChecking, CurrencyCAD, nil, "CAD test account", true)
+		cadAccount, err := db.CreateBankAccount("CAD Account", AccountTypeChecking, CurrencyCAD, nil, "CAD test account", true, Money{})
 		require.NoError(t, err, "Failed to create CAD account")
 
 		// Try to create withdrawal with USD expenses on CAD account
@@ -1054,7 +1154,7 @@ func TestLedgerFunctionality(t *testing.T) {
 	_ = item
 
 	// Create a child account for testing hierarchical features
-	childAccount, err := db.CreateBankAccount("Child Account", AccountTypeEarmark, CurrencyUSD, &account.ID, "Child of main account", true)
+	childAccount, err := db.CreateBankAccount("Child Account", AccountTypeEarmark, CurrencyUSD, &account.ID, "Child of main account", true, Money{})
 	require.NoError(t, err, "Failed to create child account")
 
 	// Create some test transactions with specific dates for testing
@@ -1285,7 +1385,7 @@ func TestLedgerEdgeCases(t *testing.T) {
 	// Test currency consistency
 	t.Run("CurrencyConsistency", func(t *testing.T) {
 		// Create CAD account
-		cadAccount, err := db.CreateBankAccount("CAD Account", AccountTypeChecking, CurrencyCAD, nil, "CAD account", true)
+		cadAccount, err := db.CreateBankAccount("CAD Account", AccountTypeChecking, CurrencyCAD, nil, "CAD account", true, Money{})
 		require.NoError(t, err, "Failed to create CAD account")
 
 		// Create CAD transaction
@@ -1334,7 +1434,7 @@ func TestReconciliationCRUD(t *testing.T) {
 		statementDate := time.Date(2024, 1, 31, 23, 59, 59, 0, time.UTC)
 		statementBalance := NewMoney(10000, CurrencyUSD)
 
-		childAccount, err := db.CreateBankAccount("Child Account", AccountTypeEarmark, CurrencyUSD, &account.ID, "Child", true)
+		childAccount, err := db.CreateBankAccount("Child Account", AccountTypeEarmark, CurrencyUSD, &account.ID, "Child", true, Money{})
 		require.NoError(t, err, "Failed to create child account")
 
 		_, err = db.StartReconciliation(childAccount.ID, statementDate, statementBalance)
@@ -1526,7 +1626,7 @@ func TestReconciliationCRUD(t *testing.T) {
 		statementDate := time.Date(2024, 1, 31, 23, 59, 59, 0, time.UTC)
 
 		// Create account2 (different root account)
-		account2, err := db.CreateBankAccount("Account 2", AccountTypeChecking, CurrencyUSD, nil, "", true)
+		account2, err := db.CreateBankAccount("Account 2", AccountTypeChecking, CurrencyUSD, nil, "", true, Money{})
 		require.NoError(t, err, "Failed to create account2")
 
 		// Create deposit on account2
@@ -1555,7 +1655,7 @@ func TestReconciliationCRUD(t *testing.T) {
 
 		statementDate := time.Date(2024, 1, 31, 23, 59, 59, 0, time.UTC)
 
-		childAccount, err := db.CreateBankAccount("Earmark", AccountTypeEarmark, CurrencyUSD, &account.ID, "Earmark fund", true)
+		childAccount, err := db.CreateBankAccount("Earmark", AccountTypeEarmark, CurrencyUSD, &account.ID, "Earmark fund", true, Money{})
 		require.NoError(t, err, "Failed to create child account")
 
 		// Create deposit on child account

@@ -80,6 +80,10 @@ func SomeOtherFunction() {
 - Uses SQLite for persistence with file-based databases
 - Hierarchical bank accounts support earmarked funds through parent/child relationships
 - Type-safe account types (checking, savings, earmark)
+- Earmark accounts must have a checking or savings parent (cannot be top-level or nested under another earmark)
+- **Only earmark accounts can have a parent** (checking/savings accounts are always top-level)
+- **Sub-accounts must inherit currency from their parent** (enforced in `CreateBankAccount`)
+- **Opening balance support**: Accounts can be created with an initial balance, which creates a deposit transaction with memo "Opening Balance"
 - Integer-based monetary amounts to avoid floating-point precision issues
 
 ## Dependencies
@@ -97,7 +101,7 @@ func SomeOtherFunction() {
 - `Money` - integer-based monetary amounts with currency (stored as cents to avoid floating-point precision issues)
 
 ### Organization & Accounts
-- `Assembly` - represents the organization (Name, Timezone)
+- `Assembly` - represents the organization (Name, Timezone, DefaultCurrency)
 - `AccountType` - type-safe constants (checking, savings, earmark)
 - `BankAccount` - supports hierarchical structure with ParentID for sub-accounts and currency per account
 
@@ -148,7 +152,7 @@ func SomeOtherFunction() {
 
 ## Database Schema
 Schema is defined in `schema.sql` and embedded into the Go binary using `//go:embed`. Complete schema includes:
-- `assembly` table - single row per database file with name and timezone
+- `assembly` table - single row per database file with name, timezone, and default_currency
 - `bank_accounts` table - hierarchical accounts with parent_id foreign key, currency, and account type
 - `items` table - contribution categories/funds
 - `categories` table - expense categories for withdrawal transactions
@@ -167,7 +171,7 @@ Schema is defined in `schema.sql` and embedded into the Go binary using `//go:em
 ```go
 // Create a new .bedrock database with Assembly initialization
 eastern, _ := time.LoadLocation("America/New_York")
-db, err := bedrock.New("/path/to/finances.bedrock", "Local Spiritual Assembly of New York", eastern)
+db, err := bedrock.New("/path/to/finances.bedrock", "Local Spiritual Assembly of New York", eastern, bedrock.CurrencyUSD)
 if err != nil {
     // handle error
 }
@@ -202,6 +206,7 @@ defer db.Close()
   - **Category CRUD**: CreateCategory, Category, CategoryByName, Categories, UpdateCategory, DeleteCategory
   - **Party CRUD**: CreateParty, Party, PartyByName, PartyByEmail, PartyByBahaiID, ListParties, SearchParties, UpdateParty, DeleteParty
   - **Receipt CRUD**: CreateReceipt (auto HumanID with current time), Receipt, ReceiptByHumanID, ReceiptsByCustomer, ReceiptsByTransaction, UndepositedReceipts, Receipts, AssignReceiptToTransaction, UnassignReceiptFromTransaction, DeleteReceipt
+  - **ReceiptItem CRUD**: CreateReceiptItem, ReceiptItem, ReceiptItems, UpdateReceiptItem, DeleteReceiptItem
   - **BankAccount CRUD**: CreateBankAccount, BankAccount, BankAccountByName, RootBankAccounts, ChildBankAccounts, BankAccounts, ActiveBankAccounts, UpdateBankAccount, DeactivateBankAccount, DeleteBankAccount
   - **Transaction CRUD**: CreateDeposit, CreateWithdrawal (with expense categorization and currency validation)
   - **Ledger Operations**: AccountLedger, AccountBalance, AccountBalanceAsOf, TransactionsForAccount, AccountTransactionCount, AllAccountBalances, LastTransactionDate
@@ -211,6 +216,7 @@ defer db.Close()
 - **Database Initialization**: `bedrock.New()` creates new databases with automatic Assembly setup and timezone configuration
 - **Timezone-Aware Receipt IDs**: HumanID automatically generated using current system time in Assembly timezone format `20060102150405.000` (ensures uniqueness)
 - **Cycle Prevention**: BankAccount parent relationships prevent circular references with comprehensive validation
+- **Currency Inheritance**: Sub-accounts must use the same currency as their parent account (validated in `CreateBankAccount`)
 - **Currency Validation**: Transactions validated against account currency to prevent currency mismatches
 - **Expense Categorization**: Withdrawal transactions require one or more expense items with automatic total calculation and validation
 - **Ledger Views**: Complete account ledgers with running balances, hierarchical account support, and enriched transaction data
@@ -368,9 +374,46 @@ if err != nil {
 err = db.UndoReconciliation(completed.ID)
 ```
 
+### Creating Bank Accounts with Opening Balances
+```go
+// Create a checking account with $1,500.00 opening balance
+openingBalance := NewMoney(150000, CurrencyUSD) // Amount in cents
+account, err := db.CreateBankAccount(
+    "Main Checking",
+    AccountTypeChecking,
+    CurrencyUSD,
+    nil,           // no parent (top-level account)
+    "Primary checking account",
+    true,          // isActive
+    openingBalance,
+)
+// This creates the account AND a deposit transaction with memo "Opening Balance"
+
+// Create an account with no opening balance
+account, err := db.CreateBankAccount(
+    "Savings",
+    AccountTypeSavings,
+    CurrencyUSD,
+    nil,
+    "",
+    true,
+    Money{}, // Zero balance - no transaction created
+)
+
+// Earmark accounts can also have opening balances
+// They inherit currency from their parent
+earmark, err := db.CreateBankAccount(
+    "Emergency Fund",
+    AccountTypeEarmark,
+    parent.Currency, // Must match parent
+    &parent.ID,
+    "",
+    true,
+    NewMoney(50000, parent.Currency), // $500.00
+)
+```
+
 ## Next Steps (Suggested)
-- Assembly creation/retrieval methods
-- ReceiptItem CRUD operations
 - Expense querying and reporting methods (ExpensesByCategory, ExpensesByTransaction, etc.)
 - Transaction querying and reporting methods
 - Account balance calculations with expense breakdowns

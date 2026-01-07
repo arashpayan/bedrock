@@ -4,14 +4,45 @@ import (
 	"fmt"
 )
 
-// CreateBankAccount creates a new bank account
-func (db *DB) CreateBankAccount(name string, accountType AccountType, currency Currency, parentID *ID, description string, isActive bool) (*BankAccount, error) {
+// CreateBankAccount creates a new bank account.
+// Only earmark accounts can have a parent. Earmarks must have a checking or savings parent.
+// If openingBalance has a positive amount, a deposit transaction is created with memo "Opening Balance".
+func (db *DB) CreateBankAccount(name string, accountType AccountType, currency Currency, parentID *ID, description string, isActive bool, openingBalance Money) (*BankAccount, error) {
 	if name == "" {
 		return nil, fmt.Errorf("account name cannot be empty")
 	}
 
-	// If parentID is provided, validate it exists and check for cycles
-	if parentID != nil {
+	// Only earmark accounts can have a parent
+	if parentID != nil && accountType != AccountTypeEarmark {
+		return nil, fmt.Errorf("only earmark accounts can have a parent account")
+	}
+
+	// Validate opening balance
+	if openingBalance.Amount < 0 {
+		return nil, fmt.Errorf("opening balance cannot be negative")
+	}
+	if openingBalance.Amount > 0 && openingBalance.Currency != currency {
+		return nil, fmt.Errorf("opening balance currency %s does not match account currency %s", openingBalance.Currency, currency)
+	}
+
+	// Earmark accounts must have a parent that is checking or savings
+	var parent *BankAccount
+	if accountType == AccountTypeEarmark {
+		if parentID == nil {
+			return nil, fmt.Errorf("earmark accounts must have a parent account")
+		}
+		var err error
+		parent, err = db.BankAccount(*parentID)
+		if err != nil {
+			return nil, fmt.Errorf("failed to retrieve parent account: %w", err)
+		}
+		if parent.AccountType != AccountTypeChecking && parent.AccountType != AccountTypeSavings {
+			return nil, fmt.Errorf("earmark accounts must have a checking or savings parent, not %s", parent.AccountType)
+		}
+		// Earmarks must inherit parent's currency
+		if currency != parent.Currency {
+			return nil, fmt.Errorf("earmark accounts must use the same currency as their parent (%s)", parent.Currency)
+		}
 		if err := db.validateParentAccount(*parentID, nil); err != nil {
 			return nil, err
 		}
@@ -32,6 +63,16 @@ func (db *DB) CreateBankAccount(name string, accountType AccountType, currency C
 	account := BankAccount{}
 	if err := db.conn.Get(&account, query, args...); err != nil {
 		return nil, fmt.Errorf("failed to insert bank account: %w", err)
+	}
+
+	// Create opening balance transaction if amount is positive
+	if openingBalance.Amount > 0 {
+		_, err := db.CreateDeposit(account.ID, openingBalance, TransactionMethodElectronicTransfer, "Opening Balance", account.CreatedAt)
+		if err != nil {
+			// Rollback by deleting the account
+			_ = db.DeleteBankAccount(account.ID)
+			return nil, fmt.Errorf("failed to create opening balance transaction: %w", err)
+		}
 	}
 
 	return &account, nil

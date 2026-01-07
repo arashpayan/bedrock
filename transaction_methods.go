@@ -2,6 +2,7 @@ package bedrock
 
 import (
 	"fmt"
+	"strconv"
 	"time"
 )
 
@@ -120,4 +121,51 @@ func (db *DB) CreateWithdrawal(accountID ID, payeeID ID, method TransactionMetho
 	}
 
 	return &transaction, nil
+}
+
+// HighestCheckNumber returns the highest numeric check number used for an account.
+// For earmark accounts, it looks at the root account and all its sub-accounts.
+// Returns 0 if no checks have been written.
+func (db *DB) HighestCheckNumber(accountID ID) (int, error) {
+	// Find the root account (traverse up if this is an earmark)
+	rootID := accountID
+	for {
+		var parentID *ID
+		err := db.conn.Get(&parentID, "SELECT parent_id FROM bank_accounts WHERE id = ?", rootID)
+		if err != nil {
+			return 0, fmt.Errorf("failed to get account: %w", err)
+		}
+		if parentID == nil {
+			break // This is the root
+		}
+		rootID = *parentID
+	}
+
+	// Get all check numbers from root account and its children
+	query := `
+		WITH RECURSIVE account_tree AS (
+			SELECT id FROM bank_accounts WHERE id = ?
+			UNION ALL
+			SELECT ba.id FROM bank_accounts ba
+			INNER JOIN account_tree at ON ba.parent_id = at.id
+		)
+		SELECT check_number FROM transactions
+		WHERE account_id IN (SELECT id FROM account_tree)
+		AND check_number IS NOT NULL
+	`
+
+	var checkNumbers []string
+	if err := db.conn.Select(&checkNumbers, query, rootID); err != nil {
+		return 0, fmt.Errorf("failed to get check numbers: %w", err)
+	}
+
+	// Find the highest numeric check number
+	highest := 0
+	for _, cn := range checkNumbers {
+		if num, err := strconv.Atoi(cn); err == nil && num > highest {
+			highest = num
+		}
+	}
+
+	return highest, nil
 }

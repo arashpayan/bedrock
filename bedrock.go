@@ -46,7 +46,19 @@ func (m Money) Float64() float64 {
 
 // String returns a formatted string representation of the money
 func (m Money) String() string {
-	return fmt.Sprintf("%.2f %s", m.Float64(), m.Currency)
+	return fmt.Sprintf("%s%.2f", m.CurrencySymbol(), m.Float64())
+}
+
+// CurrencySymbol returns the symbol for the currency (e.g., "$" for USD)
+func (m Money) CurrencySymbol() string {
+	switch m.Currency {
+	case CurrencyUSD:
+		return "$"
+	case CurrencyCAD:
+		return "$"
+	default:
+		return "$"
+	}
 }
 
 // AccountType represents the type of bank account
@@ -68,8 +80,9 @@ type Base struct {
 // Assembly represents a Spiritual Assembly organization
 type Assembly struct {
 	Base
-	Name     string         `db:"name"`
-	Timezone *time.Location `db:"timezone"`
+	DefaultCurrency Currency       `db:"default_currency"`
+	Name            string         `db:"name"`
+	Timezone        *time.Location `db:"timezone"`
 }
 
 // BankAccount represents a bank account with optional parent for sub-accounts
@@ -236,12 +249,15 @@ type DB struct {
 }
 
 // New creates a new bedrock database file with an initialized Spiritual Assembly
-func New(filepath string, assemblyName string, timezone *time.Location) (*DB, error) {
+func New(filepath string, assemblyName string, timezone *time.Location, defaultCurrency Currency) (*DB, error) {
 	if assemblyName == "" {
 		return nil, fmt.Errorf("assembly name cannot be empty")
 	}
 	if timezone == nil {
 		return nil, fmt.Errorf("timezone cannot be nil")
+	}
+	if defaultCurrency != CurrencyUSD && defaultCurrency != CurrencyCAD {
+		return nil, fmt.Errorf("invalid currency: %s", defaultCurrency)
 	}
 
 	// Create the database using Open
@@ -251,7 +267,7 @@ func New(filepath string, assemblyName string, timezone *time.Location) (*DB, er
 	}
 
 	// Create the assembly
-	_, err = db.createAssembly(assemblyName, timezone)
+	_, err = db.createAssembly(assemblyName, timezone, defaultCurrency)
 	if err != nil {
 		db.Close()
 		return nil, fmt.Errorf("failed to create assembly: %w", err)
