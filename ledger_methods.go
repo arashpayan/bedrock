@@ -277,13 +277,25 @@ func (db *DB) LastTransactionDate(accountID ID, includeSubaccounts bool) (*time.
 	}
 
 	// Parse the date string returned by SQLite
-	lastDate, err := time.Parse("2006-01-02 15:04:05.999999999-07:00", *lastDateStr)
-	if err != nil {
-		// Try alternative format
-		lastDate, err = time.Parse("2006-01-02 15:04:05", *lastDateStr)
-		if err != nil {
-			return nil, fmt.Errorf("failed to parse last transaction date: %w", err)
+	// Try multiple formats to handle different SQLite drivers
+	formats := []string{
+		"2006-01-02 15:04:05.999999999-07:00",
+		"2006-01-02 15:04:05",
+		"2006-01-02 15:04:05 -0700 MST", // modernc.org/sqlite format
+		time.RFC3339Nano,
+		time.RFC3339,
+	}
+
+	var lastDate time.Time
+	var parseErr error
+	for _, format := range formats {
+		lastDate, parseErr = time.Parse(format, *lastDateStr)
+		if parseErr == nil {
+			break
 		}
+	}
+	if parseErr != nil {
+		return nil, fmt.Errorf("failed to parse last transaction date: %w", parseErr)
 	}
 
 	return &lastDate, nil

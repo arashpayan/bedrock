@@ -89,7 +89,7 @@ func SomeOtherFunction() {
 ## Dependencies
 - `github.com/jmoiron/sqlx` - Database operations with reduced boilerplate
 - `github.com/Masterminds/squirrel` - SQL query building with SetMap() and MustSql()
-- `github.com/mattn/go-sqlite3` - SQLite driver
+- `modernc.org/sqlite` - Pure Go SQLite driver (no CGO required)
 - `github.com/stretchr/testify` - Enhanced testing assertions and test utilities
 
 ## Core Types Implemented

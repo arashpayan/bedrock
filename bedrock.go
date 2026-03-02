@@ -8,7 +8,7 @@ import (
 
 	"github.com/Masterminds/squirrel"
 	"github.com/jmoiron/sqlx"
-	_ "github.com/mattn/go-sqlite3"
+	_ "modernc.org/sqlite"
 )
 
 //go:embed schema.sql
@@ -278,7 +278,7 @@ func New(filepath string, assemblyName string, timezone *time.Location, defaultC
 
 // Open opens or creates a bedrock database file
 func Open(filepath string) (*DB, error) {
-	conn, err := sqlx.Connect("sqlite3", filepath+"?_loc=auto&_foreign_keys=on")
+	conn, err := sqlx.Connect("sqlite", filepath+"?_pragma=foreign_keys(1)")
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
