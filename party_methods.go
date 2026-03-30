@@ -11,7 +11,7 @@ func (db *DB) CreateParty(name string, emailAddress, bahaiIDNumber, address, tel
 	}
 
 	query, args := db.sq.Insert("parties").
-		SetMap(map[string]interface{}{
+		SetMap(map[string]any{
 			"name":             name,
 			"email_address":    emailAddress,
 			"bahai_id_number":  bahaiIDNumber,
@@ -139,7 +139,7 @@ func (db *DB) UpdateParty(id ID, name string, emailAddress, bahaiIDNumber, addre
 	}
 
 	query, args := db.sq.Update("parties").
-		SetMap(map[string]interface{}{
+		SetMap(map[string]any{
 			"name":             name,
 			"email_address":    emailAddress,
 			"bahai_id_number":  bahaiIDNumber,

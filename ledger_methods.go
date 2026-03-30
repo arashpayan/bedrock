@@ -127,7 +127,7 @@ func (db *DB) TransactionsForAccount(accountID ID, includeSubaccounts bool, opti
 
 	// Build the base query
 	var query string
-	var args []interface{}
+	var args []any
 
 	if includeSubaccounts {
 		query = `
@@ -183,7 +183,7 @@ func (db *DB) AccountTransactionCount(accountID ID, includeSubaccounts bool, opt
 	}
 
 	var query string
-	var args []interface{}
+	var args []any
 
 	if includeSubaccounts {
 		query = `
@@ -249,7 +249,7 @@ func (db *DB) AllAccountBalances() (map[ID]Money, error) {
 // LastTransactionDate returns the most recent transaction date for an account
 func (db *DB) LastTransactionDate(accountID ID, includeSubaccounts bool) (*time.Time, error) {
 	var query string
-	var args []interface{}
+	var args []any
 
 	if includeSubaccounts {
 		query = `

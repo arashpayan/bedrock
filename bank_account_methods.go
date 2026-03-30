@@ -197,7 +197,7 @@ func (db *DB) UpdateBankAccount(id ID, name string, accountType AccountType, cur
 	}
 
 	query, args := db.sq.Update("bank_accounts").
-		SetMap(map[string]interface{}{
+		SetMap(map[string]any{
 			"parent_id":    parentID,
 			"name":         name,
 			"account_type": accountType,
@@ -220,7 +220,7 @@ func (db *DB) UpdateBankAccount(id ID, name string, accountType AccountType, cur
 // DeactivateBankAccount marks a bank account as inactive
 func (db *DB) DeactivateBankAccount(id ID) (*BankAccount, error) {
 	query, args := db.sq.Update("bank_accounts").
-		SetMap(map[string]interface{}{
+		SetMap(map[string]any{
 			"is_active": false,
 		}).
 		Where("id = ?", id).

@@ -2,6 +2,7 @@ package bedrock
 
 import (
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/jmoiron/sqlx"
@@ -82,13 +83,7 @@ func (db *DB) ClearTransaction(reconciliationID ID, transactionID ID) error {
 		return fmt.Errorf("failed to get account hierarchy: %w", err)
 	}
 
-	validAccount := false
-	for _, id := range accountIDs {
-		if transaction.AccountID == id {
-			validAccount = true
-			break
-		}
-	}
+	validAccount := slices.Contains(accountIDs, transaction.AccountID)
 	if !validAccount {
 		return fmt.Errorf("transaction does not belong to the reconciliation account or its subaccounts")
 	}
@@ -457,7 +452,7 @@ func (db *DB) getAccountAndDescendantIDs(accountID ID) ([]ID, error) {
 }
 
 // sqlxIn is a helper to expand IN clause placeholders
-func sqlxIn(query string, args ...interface{}) (string, []interface{}, error) {
+func sqlxIn(query string, args ...any) (string, []any, error) {
 	// Use sqlx.In for proper expansion
 	return sqlx.In(query, args...)
 }

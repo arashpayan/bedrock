@@ -10,8 +10,10 @@ import (
 )
 
 // strPtr returns a pointer to a string (helper for tests)
+//
+//go:fix inline
 func strPtr(s string) *string {
-	return &s
+	return new(s)
 }
 
 // testDB creates a temporary test database
@@ -435,7 +437,7 @@ func TestCategoryCRUD(t *testing.T) {
 		expenses := []ExpenseItem{
 			{
 				CategoryID:  category.ID,
-				Description: strPtr("Test expense"),
+				Description: new("Test expense"),
 				Amount:      NewMoney(1000, CurrencyUSD),
 			},
 		}
@@ -939,7 +941,7 @@ func TestTransactionCRUD(t *testing.T) {
 		expenses := []ExpenseItem{
 			{
 				CategoryID:  category.ID,
-				Description: strPtr("Office supplies"),
+				Description: new("Office supplies"),
 				Amount:      NewMoney(6000, CurrencyUSD), // $60.00
 			},
 			{
@@ -966,7 +968,7 @@ func TestTransactionCRUD(t *testing.T) {
 		negativeExpenses := []ExpenseItem{
 			{
 				CategoryID:  category.ID,
-				Description: strPtr("Invalid expense"),
+				Description: new("Invalid expense"),
 				Amount:      NewMoney(-1000, CurrencyUSD), // Negative amount should fail
 			},
 		}
@@ -1008,7 +1010,7 @@ func TestTransactionCRUD(t *testing.T) {
 		withdrawalExpenses := []ExpenseItem{
 			{
 				CategoryID:  category.ID,
-				Description: strPtr("Test expense"),
+				Description: new("Test expense"),
 				Amount:      amount,
 			},
 		}
@@ -1037,7 +1039,7 @@ func TestExpenseValidation(t *testing.T) {
 		usdExpenses := []ExpenseItem{
 			{
 				CategoryID:  category.ID,
-				Description: strPtr("USD expense on CAD account"),
+				Description: new("USD expense on CAD account"),
 				Amount:      NewMoney(1000, CurrencyUSD),
 			},
 		}
@@ -1053,12 +1055,12 @@ func TestExpenseValidation(t *testing.T) {
 		mixedExpenses := []ExpenseItem{
 			{
 				CategoryID:  category.ID,
-				Description: strPtr("USD expense"),
+				Description: new("USD expense"),
 				Amount:      NewMoney(1000, CurrencyUSD),
 			},
 			{
 				CategoryID:  category2.ID,
-				Description: strPtr("CAD expense"),
+				Description: new("CAD expense"),
 				Amount:      NewMoney(1000, CurrencyCAD),
 			},
 		}
@@ -1074,12 +1076,12 @@ func TestExpenseValidation(t *testing.T) {
 		validExpenses := []ExpenseItem{
 			{
 				CategoryID:  category.ID,
-				Description: strPtr("Office supplies"),
+				Description: new("Office supplies"),
 				Amount:      NewMoney(2500, CurrencyUSD), // $25.00
 			},
 			{
 				CategoryID:  category2.ID,
-				Description: strPtr("Flight tickets"),
+				Description: new("Flight tickets"),
 				Amount:      NewMoney(15000, CurrencyUSD), // $150.00
 			},
 			{
@@ -1125,7 +1127,7 @@ func TestExpenseValidation(t *testing.T) {
 		zeroExpenses := []ExpenseItem{
 			{
 				CategoryID:  category.ID,
-				Description: strPtr("Zero amount"),
+				Description: new("Zero amount"),
 				Amount:      NewMoney(0, CurrencyUSD),
 			},
 		}
@@ -1138,7 +1140,7 @@ func TestExpenseValidation(t *testing.T) {
 		invalidExpenses := []ExpenseItem{
 			{
 				CategoryID:  ID(99999), // Non-existent category
-				Description: strPtr("Invalid category"),
+				Description: new("Invalid category"),
 				Amount:      NewMoney(1000, CurrencyUSD),
 			},
 		}
@@ -1166,9 +1168,9 @@ func TestLedgerFunctionality(t *testing.T) {
 
 	// Transaction 2: Withdrawal $30 on Jan 2
 	expenses1 := []ExpenseItem{
-		{CategoryID: category.ID, Description: strPtr("Office supplies"), Amount: NewMoney(3000, CurrencyUSD)},
+		{CategoryID: category.ID, Description: new("Office supplies"), Amount: NewMoney(3000, CurrencyUSD)},
 	}
-	withdrawal1, err := db.CreateWithdrawal(account.ID, party.ID, TransactionMethodCheck, "Office supplies", baseTime.Add(24*time.Hour), strPtr("001"), expenses1)
+	withdrawal1, err := db.CreateWithdrawal(account.ID, party.ID, TransactionMethodCheck, "Office supplies", baseTime.Add(24*time.Hour), new("001"), expenses1)
 	require.NoError(t, err, "Failed to create withdrawal1")
 
 	// Transaction 3: Deposit $50 to child account on Jan 3
@@ -1177,9 +1179,9 @@ func TestLedgerFunctionality(t *testing.T) {
 
 	// Transaction 4: Withdrawal $20 from main account on Jan 4
 	expenses2 := []ExpenseItem{
-		{CategoryID: category.ID, Description: strPtr("Food"), Amount: NewMoney(2000, CurrencyUSD)},
+		{CategoryID: category.ID, Description: new("Food"), Amount: NewMoney(2000, CurrencyUSD)},
 	}
-	withdrawal2, err := db.CreateWithdrawal(account.ID, party.ID, TransactionMethodCheck, "Food", baseTime.Add(72*time.Hour), strPtr("002"), expenses2)
+	withdrawal2, err := db.CreateWithdrawal(account.ID, party.ID, TransactionMethodCheck, "Food", baseTime.Add(72*time.Hour), new("002"), expenses2)
 	require.NoError(t, err, "Failed to create withdrawal2")
 
 	// Test AccountBalance
@@ -1961,9 +1963,9 @@ func TestReconciliationCRUD(t *testing.T) {
 		require.NoError(t, err, "Failed to create deposit")
 
 		expenses := []ExpenseItem{
-			{CategoryID: category.ID, Description: strPtr("Expense"), Amount: NewMoney(5000, CurrencyUSD)},
+			{CategoryID: category.ID, Description: new("Expense"), Amount: NewMoney(5000, CurrencyUSD)},
 		}
-		withdrawal, err := db.CreateWithdrawal(account.ID, party.ID, TransactionMethodCheck, "Payment", statementDate.Add(-48*time.Hour), strPtr("100"), expenses)
+		withdrawal, err := db.CreateWithdrawal(account.ID, party.ID, TransactionMethodCheck, "Payment", statementDate.Add(-48*time.Hour), new("100"), expenses)
 		require.NoError(t, err, "Failed to create withdrawal")
 
 		// Expected balance: 20000 - 5000 = 15000

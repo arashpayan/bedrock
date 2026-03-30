@@ -11,7 +11,7 @@ func (db *DB) CreateItem(name string) (*Item, error) {
 	}
 
 	query, args := db.sq.Insert("items").
-		SetMap(map[string]interface{}{
+		SetMap(map[string]any{
 			"name": name,
 		}).
 		Suffix("RETURNING *").
@@ -83,7 +83,7 @@ func (db *DB) UpdateItem(id ID, name string) (*Item, error) {
 	}
 
 	query, args := db.sq.Update("items").
-		SetMap(map[string]interface{}{
+		SetMap(map[string]any{
 			"name": name,
 		}).
 		Where("id = ?", id).

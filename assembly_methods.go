@@ -24,7 +24,7 @@ func (db *DB) createAssembly(name string, timezone *time.Location, defaultCurren
 	}
 
 	query, args := db.sq.Insert("assembly").
-		SetMap(map[string]interface{}{
+		SetMap(map[string]any{
 			"name":             name,
 			"timezone":         timezone.String(),
 			"default_currency": defaultCurrency,
@@ -94,7 +94,7 @@ func (db *DB) UpdateAssembly(name string, timezone *time.Location, defaultCurren
 	}
 
 	query, args := db.sq.Update("assembly").
-		SetMap(map[string]interface{}{
+		SetMap(map[string]any{
 			"name":             name,
 			"timezone":         timezone.String(),
 			"default_currency": defaultCurrency,

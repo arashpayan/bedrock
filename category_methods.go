@@ -7,7 +7,7 @@ import (
 // CreateCategory creates a new expense category
 func (db *DB) CreateCategory(name string) (*Category, error) {
 	query, args := db.sq.Insert("categories").
-		SetMap(map[string]interface{}{
+		SetMap(map[string]any{
 			"name": name,
 		}).
 		Suffix("RETURNING *").
@@ -69,7 +69,7 @@ func (db *DB) Categories() ([]Category, error) {
 // UpdateCategory updates an existing category
 func (db *DB) UpdateCategory(id ID, name string) (*Category, error) {
 	query, args := db.sq.Update("categories").
-		SetMap(map[string]interface{}{
+		SetMap(map[string]any{
 			"name": name,
 		}).
 		Where("id = ?", id).

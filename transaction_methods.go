@@ -81,7 +81,7 @@ func (db *DB) CreateWithdrawal(accountID ID, payeeID ID, method TransactionMetho
 
 	// Create the withdrawal transaction
 	query, args := db.sq.Insert("transactions").
-		SetMap(map[string]interface{}{
+		SetMap(map[string]any{
 			"account_id":    accountID,
 			"amount":        -totalAmount,
 			"payee_id":      payeeID,
@@ -101,7 +101,7 @@ func (db *DB) CreateWithdrawal(accountID ID, payeeID ID, method TransactionMetho
 	// Create expense records
 	for _, expense := range expenses {
 		expenseQuery, expenseArgs := db.sq.Insert("expenses").
-			SetMap(map[string]interface{}{
+			SetMap(map[string]any{
 				"transaction_id": transaction.ID,
 				"category_id":    expense.CategoryID,
 				"description":    expense.Description,
