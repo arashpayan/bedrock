@@ -9,13 +9,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// strPtr returns a pointer to a string (helper for tests)
-//
-//go:fix inline
-func strPtr(s string) *string {
-	return new(s)
-}
-
 // testDB creates a temporary test database
 func testDB(t *testing.T) *DB {
 	t.Helper()

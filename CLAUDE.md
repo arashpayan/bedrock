@@ -11,6 +11,8 @@ Bedrock is a Go library that provides simplified QuickBooks-like functionality s
 - Handle errors explicitly
 - Use `go fmt` for consistent formatting
 - Write clear, concise documentation for all exported functions
+- Prefer `max()`/`min()` builtins over manual if-then clamping patterns
+- Prefer `for i := range N` over `for i := 0; i < N; i++`
 
 ### File Structure
 Functions, types, and methods should be organized alphabetically within files to improve discoverability and maintainability.
