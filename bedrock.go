@@ -96,6 +96,15 @@ type BankAccount struct {
 	IsActive    bool        `db:"is_active"`
 }
 
+// BankAccountDelta specifies the fields to update on a bank account.
+// Fields left nil are not modified. AccountType, Currency, and ParentID are
+// immutable after creation and are deliberately absent.
+type BankAccountDelta struct {
+	Name        *string
+	Description *string
+	IsActive    *bool
+}
+
 // Item represents a fund or category that can receive contributions
 type Item struct {
 	Base
@@ -125,6 +134,13 @@ type ReceiptItem struct {
 	ItemID      ID     `db:"item_id"`     // foreign key to item
 	Description string `db:"description"` // description of the contribution
 	Price       Money  `db:"price"`       // amount contributed
+}
+
+// ReceiptItemInput represents a line item when creating a receipt with CreateReceiptWithItems.
+type ReceiptItemInput struct {
+	ItemID      ID
+	Description string
+	Price       Money
 }
 
 // Expense represents a line item for a withdrawal transaction
@@ -174,13 +190,14 @@ type Party struct {
 	TelephoneNumber *string `db:"telephone_number"` // optional telephone number
 }
 
-// ReconciliationStatus represents the state of a reconciliation session
+// ReconciliationStatus represents the state of a reconciliation session.
+// A reconciliation is either in-progress or completed; cancel and undo delete
+// the record entirely rather than mark it as cancelled.
 type ReconciliationStatus string
 
 const (
 	ReconciliationStatusInProgress ReconciliationStatus = "in-progress"
 	ReconciliationStatusCompleted  ReconciliationStatus = "completed"
-	ReconciliationStatusCancelled  ReconciliationStatus = "cancelled"
 )
 
 // Reconciliation represents a bank account reconciliation session
@@ -228,6 +245,25 @@ const (
 	TransactionMethodInBranch           TransactionMethod = "in-branch"
 	TransactionMethodCheck              TransactionMethod = "check"
 )
+
+// Label returns a human-readable label for the transaction method, suitable
+// for display in the UI. Unknown values fall back to their string form.
+func (m TransactionMethod) Label() string {
+	switch m {
+	case TransactionMethodATM:
+		return "ATM"
+	case TransactionMethodAutoPay:
+		return "Auto-pay"
+	case TransactionMethodCheck:
+		return "Check"
+	case TransactionMethodElectronicTransfer:
+		return "Electronic Transfer"
+	case TransactionMethodInBranch:
+		return "In-Branch"
+	default:
+		return string(m)
+	}
+}
 
 // Transaction represents a deposit or withdrawal in a bank account
 type Transaction struct {

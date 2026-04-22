@@ -43,12 +43,9 @@ func (db *DB) CreateBankAccount(name string, accountType AccountType, currency C
 		if currency != parent.Currency {
 			return nil, fmt.Errorf("earmark accounts must use the same currency as their parent (%s)", parent.Currency)
 		}
-		if err := db.validateParentAccount(*parentID, nil); err != nil {
-			return nil, err
-		}
 	}
 
-	query, args := db.sq.Insert("bank_accounts").
+	accountQuery, accountArgs := db.sq.Insert("bank_accounts").
 		SetMap(map[string]any{
 			"parent_id":    parentID,
 			"name":         name,
@@ -60,19 +57,44 @@ func (db *DB) CreateBankAccount(name string, accountType AccountType, currency C
 		Suffix("RETURNING *").
 		MustSql()
 
+	// Fast path: no opening balance means a single statement.
+	if openingBalance.Amount == 0 {
+		account := BankAccount{}
+		if err := db.conn.Get(&account, accountQuery, accountArgs...); err != nil {
+			return nil, fmt.Errorf("failed to insert bank account: %w", err)
+		}
+		return &account, nil
+	}
+
+	// Opening balance present: insert the account and the Opening Balance
+	// deposit in a single transaction so the two can never diverge.
+	tx, err := db.conn.Beginx()
+	if err != nil {
+		return nil, fmt.Errorf("failed to start transaction: %w", err)
+	}
+	defer tx.Rollback()
+
 	account := BankAccount{}
-	if err := db.conn.Get(&account, query, args...); err != nil {
+	if err := tx.Get(&account, accountQuery, accountArgs...); err != nil {
 		return nil, fmt.Errorf("failed to insert bank account: %w", err)
 	}
 
-	// Create opening balance transaction if amount is positive
-	if openingBalance.Amount > 0 {
-		_, err := db.CreateDeposit(account.ID, openingBalance, TransactionMethodElectronicTransfer, "Opening Balance", account.CreatedAt)
-		if err != nil {
-			// Rollback by deleting the account
-			_ = db.DeleteBankAccount(account.ID)
-			return nil, fmt.Errorf("failed to create opening balance transaction: %w", err)
-		}
+	// Opening balance has no real-world method (not a check, not an ATM
+	// deposit, etc.), so leave method NULL rather than pick a misleading value.
+	depositQuery, depositArgs := db.sq.Insert("transactions").
+		SetMap(map[string]any{
+			"account_id":    account.ID,
+			"amount":        openingBalance.Amount,
+			"memo":          "Opening Balance",
+			"transacted_at": account.CreatedAt,
+		}).
+		MustSql()
+	if _, err := tx.Exec(depositQuery, depositArgs...); err != nil {
+		return nil, fmt.Errorf("failed to create opening balance transaction: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("failed to commit transaction: %w", err)
 	}
 
 	return &account, nil
@@ -183,28 +205,30 @@ func (db *DB) ActiveBankAccounts() ([]BankAccount, error) {
 	return accounts, nil
 }
 
-// UpdateBankAccount updates a bank account's information
-func (db *DB) UpdateBankAccount(id ID, name string, accountType AccountType, currency Currency, parentID *ID, description string, isActive bool) (*BankAccount, error) {
-	if name == "" {
-		return nil, fmt.Errorf("account name cannot be empty")
+// UpdateBankAccount updates the mutable fields of a bank account.
+// Only fields set on delta are modified; nil fields are left unchanged.
+// AccountType, Currency, and ParentID are immutable and cannot be updated.
+func (db *DB) UpdateBankAccount(id ID, delta BankAccountDelta) (*BankAccount, error) {
+	updates := map[string]any{}
+	if delta.Name != nil {
+		if *delta.Name == "" {
+			return nil, fmt.Errorf("account name cannot be empty")
+		}
+		updates["name"] = *delta.Name
+	}
+	if delta.Description != nil {
+		updates["description"] = *delta.Description
+	}
+	if delta.IsActive != nil {
+		updates["is_active"] = *delta.IsActive
 	}
 
-	// If parentID is provided, validate it exists and check for cycles
-	if parentID != nil {
-		if err := db.validateParentAccount(*parentID, &id); err != nil {
-			return nil, err
-		}
+	if len(updates) == 0 {
+		return db.BankAccount(id)
 	}
 
 	query, args := db.sq.Update("bank_accounts").
-		SetMap(map[string]any{
-			"parent_id":    parentID,
-			"name":         name,
-			"account_type": accountType,
-			"currency":     currency,
-			"description":  description,
-			"is_active":    isActive,
-		}).
+		SetMap(updates).
 		Where("id = ?", id).
 		Suffix("RETURNING *").
 		MustSql()
@@ -271,40 +295,6 @@ func (db *DB) DeleteBankAccount(id ID) error {
 
 	if rowsAffected == 0 {
 		return fmt.Errorf("bank account with id %d not found", id)
-	}
-
-	return nil
-}
-
-// validateParentAccount checks if the parent account exists and prevents cycles
-func (db *DB) validateParentAccount(parentID ID, excludeID *ID) error {
-	// Check if parent account exists
-	_, err := db.BankAccount(parentID)
-	if err != nil {
-		return fmt.Errorf("parent account not found: %w", err)
-	}
-
-	// If we're updating an existing account, check for cycles
-	if excludeID != nil {
-		if parentID == *excludeID {
-			return fmt.Errorf("account cannot be its own parent")
-		}
-
-		// Walk up the parent chain to detect cycles
-		currentParentID := &parentID
-		for currentParentID != nil {
-			if *currentParentID == *excludeID {
-				return fmt.Errorf("setting parent would create a cycle in account hierarchy")
-			}
-
-			// Get the next parent in the chain
-			var nextParentID *ID
-			err := db.conn.Get(&nextParentID, "SELECT parent_id FROM bank_accounts WHERE id = ?", *currentParentID)
-			if err != nil {
-				return fmt.Errorf("failed to check parent chain: %w", err)
-			}
-			currentParentID = nextParentID
-		}
 	}
 
 	return nil

@@ -9,7 +9,7 @@ Bedrock is a Go library that provides simplified QuickBooks-like functionality s
 - Follow Go naming conventions for exported vs unexported identifiers
 - Prefer composition over inheritance
 - Handle errors explicitly
-- Use `go fmt` for consistent formatting
+- Use `gofumpt` for consistent formatting (a stricter superset of `gofmt`). Run `gofumpt -w .` before committing; do not use plain `gofmt`, which will leave formatting that `gofumpt` rejects.
 - Write clear, concise documentation for all exported functions
 - Prefer `max()`/`min()` builtins over manual if-then clamping patterns
 - Prefer `for i := range N` over `for i := 0; i < N; i++`
@@ -122,7 +122,7 @@ func SomeOtherFunction() {
 - `LedgerOptions` - provides filtering and pagination options for ledger queries
 
 ### Reconciliation
-- `ReconciliationStatus` - type-safe constants (in-progress, completed, cancelled)
+- `ReconciliationStatus` - type-safe constants (in-progress, completed). A reconciliation is either in-flight or done; cancel and undo delete the record entirely.
 - `Reconciliation` - represents a bank account reconciliation session with statement date, balance, and status
 
 ### People & Entities
@@ -250,8 +250,8 @@ Reconciliation matches transactions in Bedrock with bank statements to guard aga
 1. **Start Reconciliation** - Begin a reconciliation session for a root-level account with the statement date and ending balance
 2. **Clear Transactions** - Mark transactions that appear on the bank statement as cleared
 3. **Verify Balance** - The system validates that cleared transactions sum to the statement balance
-4. **Complete or Cancel** - Finalize the reconciliation when balanced, or cancel to abandon
-5. **Undo if Needed** - Only the most recent completed reconciliation can be undone to maintain data consistency
+4. **Complete or Cancel** - Finalize the reconciliation when balanced, or cancel to abandon. **Cancel deletes the reconciliation record entirely**, unclears its transactions, and leaves no trace — a cancelled reconciliation is indistinguishable from one that never happened.
+5. **Undo if Needed** - Completed reconciliations can be undone if a mistake is found. **Undo also deletes the reconciliation record**; it is not marked cancelled. Only the most recent completed reconciliation per account may be undone, to preserve the integrity of older history.
 
 **Key Constraints:**
 - Reconciliation is only allowed for root-level accounts (not subaccounts)
@@ -259,6 +259,7 @@ Reconciliation matches transactions in Bedrock with bank statements to guard aga
 - Only one in-progress reconciliation per account at a time
 - Transactions dated after the statement date cannot be cleared
 - Only the most recent completed reconciliation can be undone
+- Cancel and undo both delete the record and unclear its transactions in a single transaction. `CancelReconciliation` returns only `error`; the record is gone on success.
 
 ## Testing
 ✅ **Comprehensive test suite implemented** using `github.com/stretchr/testify` for enhanced assertions
@@ -369,10 +370,12 @@ completed, err := db.CompleteReconciliation(reconciliation.ID)
 if err != nil {
     // Balance mismatch - investigate discrepancy
     fmt.Printf("Reconciliation failed: %v\n", err)
-    // Can cancel to abandon: db.CancelReconciliation(reconciliation.ID)
+    // Cancel deletes the in-progress record and unclears its transactions:
+    //   _ = db.CancelReconciliation(reconciliation.ID)
 }
 
-// If a mistake is discovered, undo the most recent reconciliation
+// If a mistake is discovered, undo the most recent reconciliation.
+// Undo deletes the record — the reconciliation is gone, not merely marked cancelled.
 err = db.UndoReconciliation(completed.ID)
 ```
 

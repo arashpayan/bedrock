@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strconv"
 	"time"
+
+	"github.com/jmoiron/sqlx"
 )
 
 // CreateDeposit creates a new deposit transaction
@@ -36,6 +38,80 @@ func (db *DB) CreateDeposit(accountID ID, amount Money, method TransactionMethod
 	transaction := Transaction{}
 	if err := db.conn.Get(&transaction, query, args...); err != nil {
 		return nil, fmt.Errorf("failed to insert deposit transaction: %w", err)
+	}
+
+	return &transaction, nil
+}
+
+// CreateDepositWithReceipts creates a deposit transaction and assigns the
+// given receipts to it in a single database transaction. All receipts must be
+// currently undeposited (transaction_id IS NULL). If any step fails the entire
+// operation is rolled back.
+func (db *DB) CreateDepositWithReceipts(accountID ID, amount Money, method TransactionMethod, memo string, transactedAt time.Time, receiptIDs []ID) (*Transaction, error) {
+	if amount.Amount <= 0 {
+		return nil, fmt.Errorf("deposit amount must be positive, got %d cents", amount.Amount)
+	}
+	if len(receiptIDs) == 0 {
+		return nil, fmt.Errorf("at least one receipt is required")
+	}
+
+	// Validate account currency matches amount currency
+	var accountCurrency Currency
+	if err := db.conn.Get(&accountCurrency, "SELECT currency FROM bank_accounts WHERE id = ?", accountID); err != nil {
+		return nil, fmt.Errorf("failed to get account currency: %w", err)
+	}
+	if accountCurrency != amount.Currency {
+		return nil, fmt.Errorf("amount currency %s does not match account currency %s", amount.Currency, accountCurrency)
+	}
+
+	tx, err := db.conn.Beginx()
+	if err != nil {
+		return nil, fmt.Errorf("failed to start transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	// Ensure every requested receipt exists and is undeposited. Any receipt
+	// already assigned to a transaction is rejected.
+	existsQuery, existsArgs, err := sqlx.In("SELECT id FROM receipts WHERE id IN (?) AND transaction_id IS NULL", receiptIDs)
+	if err != nil {
+		return nil, fmt.Errorf("failed to build receipt lookup: %w", err)
+	}
+	var availableIDs []ID
+	if err := tx.Select(&availableIDs, existsQuery, existsArgs...); err != nil {
+		return nil, fmt.Errorf("failed to check receipts: %w", err)
+	}
+	if len(availableIDs) != len(receiptIDs) {
+		return nil, fmt.Errorf("expected %d undeposited receipts, found %d", len(receiptIDs), len(availableIDs))
+	}
+
+	// Insert the deposit transaction
+	depositQuery, depositArgs := db.sq.Insert("transactions").
+		SetMap(map[string]any{
+			"account_id":    accountID,
+			"amount":        amount.Amount,
+			"memo":          memo,
+			"method":        method,
+			"transacted_at": transactedAt,
+		}).
+		Suffix("RETURNING *").
+		MustSql()
+
+	transaction := Transaction{}
+	if err := tx.Get(&transaction, depositQuery, depositArgs...); err != nil {
+		return nil, fmt.Errorf("failed to insert deposit transaction: %w", err)
+	}
+
+	// Assign all receipts in one UPDATE
+	assignQuery, assignArgs, err := sqlx.In("UPDATE receipts SET transaction_id = ? WHERE id IN (?)", transaction.ID, receiptIDs)
+	if err != nil {
+		return nil, fmt.Errorf("failed to build receipt assignment: %w", err)
+	}
+	if _, err := tx.Exec(assignQuery, assignArgs...); err != nil {
+		return nil, fmt.Errorf("failed to assign receipts: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("failed to commit transaction: %w", err)
 	}
 
 	return &transaction, nil

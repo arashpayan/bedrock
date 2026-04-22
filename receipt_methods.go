@@ -20,7 +20,7 @@ func (db *DB) CreateReceipt(customerID ID, soldAt time.Time) (*Receipt, error) {
 		return nil, fmt.Errorf("failed to parse assembly timezone %s: %w", assemblyTimezone, err)
 	}
 
-	// Generate HumanID using current system time in assembly timezone format 20060102150405.999
+	// Generate HumanID using current system time in assembly timezone format 20060102150405.000
 	humanID := time.Now().In(location).Format("20060102150405.000")
 
 	// Verify customer exists
@@ -41,6 +41,78 @@ func (db *DB) CreateReceipt(customerID ID, soldAt time.Time) (*Receipt, error) {
 	receipt := Receipt{}
 	if err := db.conn.Get(&receipt, query, args...); err != nil {
 		return nil, fmt.Errorf("failed to insert receipt: %w", err)
+	}
+
+	return &receipt, nil
+}
+
+// CreateReceiptWithItems creates a receipt together with all of its line items
+// in a single database transaction. If any item fails to insert, the receipt
+// is rolled back and no state is left behind.
+func (db *DB) CreateReceiptWithItems(customerID ID, soldAt time.Time, items []ReceiptItemInput) (*Receipt, error) {
+	if len(items) == 0 {
+		return nil, fmt.Errorf("at least one receipt item is required")
+	}
+
+	// Validate all items have positive prices in a consistent currency
+	currency := items[0].Price.Currency
+	for i, item := range items {
+		if item.Price.Amount <= 0 {
+			return nil, fmt.Errorf("item %d: price must be positive, got %d cents", i, item.Price.Amount)
+		}
+		if item.Price.Currency != currency {
+			return nil, fmt.Errorf("item %d: currency %s does not match %s", i, item.Price.Currency, currency)
+		}
+	}
+
+	// Get assembly timezone to generate HumanID
+	var assemblyTimezone string
+	if err := db.conn.Get(&assemblyTimezone, "SELECT timezone FROM assembly LIMIT 1"); err != nil {
+		return nil, fmt.Errorf("failed to get assembly timezone: %w", err)
+	}
+	location, err := time.LoadLocation(assemblyTimezone)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse assembly timezone %s: %w", assemblyTimezone, err)
+	}
+	humanID := time.Now().In(location).Format("20060102150405.000")
+
+	tx, err := db.conn.Beginx()
+	if err != nil {
+		return nil, fmt.Errorf("failed to start transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	receiptQuery, receiptArgs := db.sq.Insert("receipts").
+		SetMap(map[string]any{
+			"human_id":    humanID,
+			"customer_id": customerID,
+			"sold_at":     soldAt.Round(0),
+		}).
+		Suffix("RETURNING *").
+		MustSql()
+
+	receipt := Receipt{}
+	if err := tx.Get(&receipt, receiptQuery, receiptArgs...); err != nil {
+		return nil, fmt.Errorf("failed to insert receipt: %w", err)
+	}
+
+	for i, item := range items {
+		itemQuery, itemArgs := db.sq.Insert("receipt_items").
+			SetMap(map[string]any{
+				"receipt_id":  receipt.ID,
+				"item_id":     item.ItemID,
+				"description": item.Description,
+				"price":       item.Price.Amount,
+				"currency":    item.Price.Currency,
+			}).
+			MustSql()
+		if _, err := tx.Exec(itemQuery, itemArgs...); err != nil {
+			return nil, fmt.Errorf("failed to insert receipt item %d: %w", i, err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("failed to commit transaction: %w", err)
 	}
 
 	return &receipt, nil

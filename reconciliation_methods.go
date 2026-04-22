@@ -8,53 +8,38 @@ import (
 	"github.com/jmoiron/sqlx"
 )
 
-// CancelReconciliation cancels an in-progress reconciliation session
-func (db *DB) CancelReconciliation(reconciliationID ID) (*Reconciliation, error) {
-	// Get the reconciliation
+// CancelReconciliation abandons an in-progress reconciliation by unclearing
+// all transactions it held and deleting the reconciliation record. A cancelled
+// reconciliation is indistinguishable from one that never existed.
+func (db *DB) CancelReconciliation(reconciliationID ID) error {
 	reconciliation, err := db.Reconciliation(reconciliationID)
 	if err != nil {
-		return nil, err
+		return err
 	}
 
 	// Only in-progress reconciliations can be cancelled
 	if reconciliation.Status != ReconciliationStatusInProgress {
-		return nil, fmt.Errorf("can only cancel in-progress reconciliations, current status is %s", reconciliation.Status)
+		return fmt.Errorf("can only cancel in-progress reconciliations, current status is %s", reconciliation.Status)
 	}
 
-	// Start database transaction
 	tx, err := db.conn.Beginx()
 	if err != nil {
-		return nil, fmt.Errorf("failed to start transaction: %w", err)
+		return fmt.Errorf("failed to start transaction: %w", err)
 	}
 	defer tx.Rollback()
 
-	// Unclear all transactions associated with this reconciliation
-	unclearQuery := `UPDATE transactions SET reconciliation_id = NULL WHERE reconciliation_id = ?`
-	if _, err := tx.Exec(unclearQuery, reconciliationID); err != nil {
-		return nil, fmt.Errorf("failed to unclear transactions: %w", err)
+	if _, err := tx.Exec(`UPDATE transactions SET reconciliation_id = NULL WHERE reconciliation_id = ?`, reconciliationID); err != nil {
+		return fmt.Errorf("failed to unclear transactions: %w", err)
+	}
+	if _, err := tx.Exec(`DELETE FROM reconciliations WHERE id = ?`, reconciliationID); err != nil {
+		return fmt.Errorf("failed to delete reconciliation: %w", err)
 	}
 
-	// Update reconciliation status
-	updateQuery, updateArgs := db.sq.Update("reconciliations").
-		SetMap(map[string]any{
-			"status": ReconciliationStatusCancelled,
-		}).
-		Where("id = ?", reconciliationID).
-		Suffix("RETURNING id, account_id, statement_date, statement_balance, statement_balance_currency, status, completed_at, created_at, modified_at").
-		MustSql()
-
-	var row reconciliationRow
-	if err := tx.Get(&row, updateQuery, updateArgs...); err != nil {
-		return nil, fmt.Errorf("failed to update reconciliation status: %w", err)
-	}
-
-	// Commit transaction
 	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("failed to commit transaction: %w", err)
+		return fmt.Errorf("failed to commit transaction: %w", err)
 	}
 
-	result := row.toReconciliation()
-	return &result, nil
+	return nil
 }
 
 // ClearTransaction marks a transaction as cleared in a reconciliation
@@ -362,7 +347,7 @@ func (db *DB) UnclearedTransactions(accountID ID, statementDate time.Time) ([]Tr
 			  ORDER BY transacted_at ASC, id ASC`
 
 	// Use sqlx.In to expand the slice
-	query, args, err := sqlxIn(query, accountIDs, statementDate)
+	query, args, err := sqlx.In(query, accountIDs, statementDate)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build query: %w", err)
 	}
@@ -375,9 +360,10 @@ func (db *DB) UnclearedTransactions(accountID ID, statementDate time.Time) ([]Tr
 	return transactions, nil
 }
 
-// UndoReconciliation reverts the most recent completed reconciliation for an account
+// UndoReconciliation reverses a completed reconciliation by unclearing its
+// transactions and deleting the record. Only the most recent completed
+// reconciliation for an account may be undone — older history remains intact.
 func (db *DB) UndoReconciliation(reconciliationID ID) error {
-	// Get the reconciliation
 	reconciliation, err := db.Reconciliation(reconciliationID)
 	if err != nil {
 		return err
@@ -393,38 +379,23 @@ func (db *DB) UndoReconciliation(reconciliationID ID) error {
 	if err != nil {
 		return fmt.Errorf("failed to get last completed reconciliation: %w", err)
 	}
-
 	if lastCompleted.ID != reconciliationID {
 		return fmt.Errorf("can only undo the most recent completed reconciliation")
 	}
 
-	// Start database transaction
 	tx, err := db.conn.Beginx()
 	if err != nil {
 		return fmt.Errorf("failed to start transaction: %w", err)
 	}
 	defer tx.Rollback()
 
-	// Unclear all transactions associated with this reconciliation
-	unclearQuery := `UPDATE transactions SET reconciliation_id = NULL WHERE reconciliation_id = ?`
-	if _, err := tx.Exec(unclearQuery, reconciliationID); err != nil {
+	if _, err := tx.Exec(`UPDATE transactions SET reconciliation_id = NULL WHERE reconciliation_id = ?`, reconciliationID); err != nil {
 		return fmt.Errorf("failed to unclear transactions: %w", err)
 	}
-
-	// Update reconciliation status to cancelled (we keep the record for history)
-	updateQuery, updateArgs := db.sq.Update("reconciliations").
-		SetMap(map[string]any{
-			"status":       ReconciliationStatusCancelled,
-			"completed_at": nil,
-		}).
-		Where("id = ?", reconciliationID).
-		MustSql()
-
-	if _, err := tx.Exec(updateQuery, updateArgs...); err != nil {
-		return fmt.Errorf("failed to update reconciliation status: %w", err)
+	if _, err := tx.Exec(`DELETE FROM reconciliations WHERE id = ?`, reconciliationID); err != nil {
+		return fmt.Errorf("failed to delete reconciliation: %w", err)
 	}
 
-	// Commit transaction
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("failed to commit transaction: %w", err)
 	}
@@ -449,10 +420,4 @@ func (db *DB) getAccountAndDescendantIDs(accountID ID) ([]ID, error) {
 	}
 
 	return ids, nil
-}
-
-// sqlxIn is a helper to expand IN clause placeholders
-func sqlxIn(query string, args ...any) (string, []any, error) {
-	// Use sqlx.In for proper expansion
-	return sqlx.In(query, args...)
 }

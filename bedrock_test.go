@@ -656,6 +656,7 @@ func TestBankAccountCRUD(t *testing.T) {
 		require.Len(t, transactions, 1, "Should have exactly one transaction")
 		assert.Equal(t, "Opening Balance", transactions[0].Memo, "Transaction memo should be 'Opening Balance'")
 		assert.Equal(t, int64(150000), transactions[0].Amount, "Transaction amount should match opening balance")
+		assert.Nil(t, transactions[0].Method, "Opening balance should have no transaction method")
 	})
 
 	// Test CreateBankAccount with opening balance currency mismatch
@@ -751,13 +752,61 @@ func TestBankAccountCRUD(t *testing.T) {
 
 	// Test UpdateBankAccount
 	t.Run("UpdateBankAccount", func(t *testing.T) {
-		updated, err := db.UpdateBankAccount(parentAccount.ID, "Updated Account", AccountTypeSavings, CurrencyCAD, nil, "Updated description", false)
+		originalType := parentAccount.AccountType
+		originalCurrency := parentAccount.Currency
+		originalParent := parentAccount.ParentID
+
+		newName := "Updated Account"
+		newDesc := "Updated description"
+		newActive := false
+
+		updated, err := db.UpdateBankAccount(parentAccount.ID, BankAccountDelta{
+			Name:        &newName,
+			Description: &newDesc,
+			IsActive:    &newActive,
+		})
 		require.NoError(t, err, "UpdateBankAccount should succeed")
 
-		assert.Equal(t, "Updated Account", updated.Name)
-		assert.Equal(t, AccountTypeSavings, updated.AccountType)
-		assert.Equal(t, CurrencyCAD, updated.Currency)
+		assert.Equal(t, newName, updated.Name)
+		assert.Equal(t, newDesc, updated.Description)
 		assert.False(t, updated.IsActive)
+		// Immutable fields must be preserved
+		assert.Equal(t, originalType, updated.AccountType)
+		assert.Equal(t, originalCurrency, updated.Currency)
+		assert.Equal(t, originalParent, updated.ParentID)
+	})
+
+	// Partial updates leave other fields untouched
+	t.Run("UpdateBankAccountPartial", func(t *testing.T) {
+		account, err := db.CreateBankAccount("Partial Update", AccountTypeChecking, CurrencyUSD, nil, "initial", true, Money{})
+		require.NoError(t, err)
+
+		newName := "Partial Update Renamed"
+		updated, err := db.UpdateBankAccount(account.ID, BankAccountDelta{Name: &newName})
+		require.NoError(t, err)
+
+		assert.Equal(t, newName, updated.Name)
+		assert.Equal(t, "initial", updated.Description)
+		assert.True(t, updated.IsActive)
+	})
+
+	// Empty delta is a no-op that returns the current account
+	t.Run("UpdateBankAccountNoOp", func(t *testing.T) {
+		before, err := db.BankAccount(parentAccount.ID)
+		require.NoError(t, err)
+
+		after, err := db.UpdateBankAccount(parentAccount.ID, BankAccountDelta{})
+		require.NoError(t, err)
+		assert.Equal(t, before.Name, after.Name)
+		assert.Equal(t, before.Description, after.Description)
+		assert.Equal(t, before.IsActive, after.IsActive)
+	})
+
+	// Empty name is rejected
+	t.Run("UpdateBankAccountEmptyName", func(t *testing.T) {
+		empty := ""
+		_, err := db.UpdateBankAccount(parentAccount.ID, BankAccountDelta{Name: &empty})
+		assert.Error(t, err, "Expected error when setting name to empty string")
 	})
 
 	// Test DeactivateBankAccount
@@ -770,13 +819,6 @@ func TestBankAccountCRUD(t *testing.T) {
 		require.NoError(t, err, "DeactivateBankAccount should succeed")
 
 		assert.False(t, deactivated.IsActive, "Account should be inactive after deactivation")
-	})
-
-	// Test cycle prevention
-	t.Run("CyclePrevention", func(t *testing.T) {
-		// Try to make parent account a child of itself
-		_, err := db.UpdateBankAccount(parentAccount.ID, "Cyclic", AccountTypeChecking, CurrencyUSD, &parentAccount.ID, "", true)
-		assert.Error(t, err, "Expected error when making account its own parent")
 	})
 }
 
@@ -886,6 +928,203 @@ func TestReceiptCRUD(t *testing.T) {
 		// Verify receipt is deleted
 		_, err = db.Receipt(receipt.ID)
 		assert.Error(t, err, "Expected error when retrieving deleted receipt")
+	})
+}
+
+func TestCreateReceiptWithItems(t *testing.T) {
+	db := testDB(t)
+	_, _, item, party, _ := setupTestData(t, db)
+
+	soldAt := time.Now()
+
+	// Commit path: all items persist and the receipt sums to the right total
+	t.Run("Success", func(t *testing.T) {
+		items := []ReceiptItemInput{
+			{ItemID: item.ID, Description: "First", Price: NewMoney(1000, CurrencyUSD)},
+			{ItemID: item.ID, Description: "Second", Price: NewMoney(2500, CurrencyUSD)},
+		}
+		receipt, err := db.CreateReceiptWithItems(party.ID, soldAt, items)
+		require.NoError(t, err)
+		assert.NotZero(t, receipt.ID)
+		assert.NotEmpty(t, receipt.HumanID)
+
+		persisted, err := db.ReceiptItems(receipt.ID)
+		require.NoError(t, err)
+		require.Len(t, persisted, 2)
+
+		var total int64
+		for _, ri := range persisted {
+			total += ri.Price.Amount
+		}
+		assert.Equal(t, int64(3500), total)
+	})
+
+	// Rollback path: bad item_id on the second line triggers a FK failure.
+	// The receipt and the first line item must not be persisted.
+	t.Run("RollbackOnInvalidItem", func(t *testing.T) {
+		var receiptsBefore, itemsBefore int
+		require.NoError(t, db.conn.Get(&receiptsBefore, "SELECT COUNT(*) FROM receipts"))
+		require.NoError(t, db.conn.Get(&itemsBefore, "SELECT COUNT(*) FROM receipt_items"))
+
+		badItems := []ReceiptItemInput{
+			{ItemID: item.ID, Description: "orphan sentinel", Price: NewMoney(1000, CurrencyUSD)},
+			{ItemID: 99999, Description: "bad", Price: NewMoney(500, CurrencyUSD)},
+		}
+		_, err := db.CreateReceiptWithItems(party.ID, soldAt, badItems)
+		require.Error(t, err)
+
+		var receiptsAfter, itemsAfter int
+		require.NoError(t, db.conn.Get(&receiptsAfter, "SELECT COUNT(*) FROM receipts"))
+		require.NoError(t, db.conn.Get(&itemsAfter, "SELECT COUNT(*) FROM receipt_items"))
+		assert.Equal(t, receiptsBefore, receiptsAfter, "receipt should not be persisted on rollback")
+		assert.Equal(t, itemsBefore, itemsAfter, "receipt items should not be persisted on rollback")
+
+		// Belt and suspenders: the sentinel description from the first line
+		// shouldn't exist even as an orphan row.
+		var orphanCount int
+		require.NoError(t, db.conn.Get(&orphanCount, "SELECT COUNT(*) FROM receipt_items WHERE description = ?", "orphan sentinel"))
+		assert.Zero(t, orphanCount)
+	})
+
+	t.Run("RejectsEmptyItems", func(t *testing.T) {
+		_, err := db.CreateReceiptWithItems(party.ID, soldAt, nil)
+		assert.Error(t, err)
+	})
+
+	t.Run("RejectsMixedCurrencies", func(t *testing.T) {
+		items := []ReceiptItemInput{
+			{ItemID: item.ID, Price: NewMoney(1000, CurrencyUSD)},
+			{ItemID: item.ID, Price: NewMoney(500, CurrencyCAD)},
+		}
+		_, err := db.CreateReceiptWithItems(party.ID, soldAt, items)
+		assert.Error(t, err)
+	})
+
+	t.Run("RejectsNonPositivePrice", func(t *testing.T) {
+		items := []ReceiptItemInput{
+			{ItemID: item.ID, Price: NewMoney(0, CurrencyUSD)},
+		}
+		_, err := db.CreateReceiptWithItems(party.ID, soldAt, items)
+		assert.Error(t, err)
+	})
+}
+
+func TestCreateDepositWithReceipts(t *testing.T) {
+	db := testDB(t)
+	_, account, item, party, _ := setupTestData(t, db)
+
+	soldAt := time.Now()
+
+	// Helper: make a receipt with one $20 line item
+	makeReceipt := func(t *testing.T) *Receipt {
+		t.Helper()
+		items := []ReceiptItemInput{
+			{ItemID: item.ID, Price: NewMoney(2000, CurrencyUSD)},
+		}
+		r, err := db.CreateReceiptWithItems(party.ID, soldAt, items)
+		require.NoError(t, err)
+		return r
+	}
+
+	// Commit path: deposit is created and every receipt is assigned
+	t.Run("Success", func(t *testing.T) {
+		r1 := makeReceipt(t)
+		r2 := makeReceipt(t)
+
+		txn, err := db.CreateDepositWithReceipts(
+			account.ID,
+			NewMoney(4000, CurrencyUSD),
+			TransactionMethodInBranch,
+			"Weekly deposit",
+			time.Now(),
+			[]ID{r1.ID, r2.ID},
+		)
+		require.NoError(t, err)
+		assert.Equal(t, int64(4000), txn.Amount)
+
+		for _, rid := range []ID{r1.ID, r2.ID} {
+			got, err := db.Receipt(rid)
+			require.NoError(t, err)
+			require.NotNil(t, got.TransactionID)
+			assert.Equal(t, txn.ID, *got.TransactionID)
+		}
+	})
+
+	// Rollback path: one receipt is already assigned, so the whole deposit
+	// must be rejected and no new transaction created.
+	t.Run("RollbackWhenReceiptAlreadyAssigned", func(t *testing.T) {
+		r1 := makeReceipt(t)
+		r2 := makeReceipt(t)
+
+		// Pre-assign r1 to an initial deposit
+		_, err := db.CreateDepositWithReceipts(
+			account.ID,
+			NewMoney(2000, CurrencyUSD),
+			TransactionMethodInBranch,
+			"initial",
+			time.Now(),
+			[]ID{r1.ID},
+		)
+		require.NoError(t, err)
+
+		var txBefore int
+		require.NoError(t, db.conn.Get(&txBefore, "SELECT COUNT(*) FROM transactions"))
+
+		_, err = db.CreateDepositWithReceipts(
+			account.ID,
+			NewMoney(4000, CurrencyUSD),
+			TransactionMethodInBranch,
+			"should rollback",
+			time.Now(),
+			[]ID{r1.ID, r2.ID},
+		)
+		require.Error(t, err)
+
+		var txAfter int
+		require.NoError(t, db.conn.Get(&txAfter, "SELECT COUNT(*) FROM transactions"))
+		assert.Equal(t, txBefore, txAfter, "no new transaction should be created on rollback")
+
+		// r2 must still be undeposited
+		got, err := db.Receipt(r2.ID)
+		require.NoError(t, err)
+		assert.Nil(t, got.TransactionID, "receipt should remain unassigned when deposit rolls back")
+	})
+
+	t.Run("RejectsEmptyReceipts", func(t *testing.T) {
+		_, err := db.CreateDepositWithReceipts(
+			account.ID,
+			NewMoney(1000, CurrencyUSD),
+			TransactionMethodInBranch,
+			"",
+			time.Now(),
+			nil,
+		)
+		assert.Error(t, err)
+	})
+
+	t.Run("RejectsUnknownReceipt", func(t *testing.T) {
+		_, err := db.CreateDepositWithReceipts(
+			account.ID,
+			NewMoney(1000, CurrencyUSD),
+			TransactionMethodInBranch,
+			"",
+			time.Now(),
+			[]ID{99999},
+		)
+		assert.Error(t, err)
+	})
+
+	t.Run("RejectsCurrencyMismatch", func(t *testing.T) {
+		r := makeReceipt(t)
+		_, err := db.CreateDepositWithReceipts(
+			account.ID,
+			NewMoney(2000, CurrencyCAD),
+			TransactionMethodInBranch,
+			"",
+			time.Now(),
+			[]ID{r.ID},
+		)
+		assert.Error(t, err)
 	})
 }
 
@@ -1509,11 +1748,11 @@ func TestReconciliationCRUD(t *testing.T) {
 		statementDate := time.Date(2024, 1, 31, 23, 59, 59, 0, time.UTC)
 		statementBalance := NewMoney(10000, CurrencyUSD)
 
-		// Create and cancel a reconciliation
+		// Create and cancel a reconciliation; cancellation deletes the record,
+		// so it must not appear in the listing.
 		reconciliation1, err := db.StartReconciliation(account.ID, statementDate, statementBalance)
 		require.NoError(t, err, "Failed to start reconciliation")
-		_, err = db.CancelReconciliation(reconciliation1.ID)
-		require.NoError(t, err, "Failed to cancel reconciliation")
+		require.NoError(t, db.CancelReconciliation(reconciliation1.ID), "Failed to cancel reconciliation")
 
 		// Create another one
 		_, err = db.StartReconciliation(account.ID, statementDate.AddDate(0, 1, 0), statementBalance)
@@ -1522,7 +1761,7 @@ func TestReconciliationCRUD(t *testing.T) {
 		reconciliations, err := db.Reconciliations(account.ID)
 		require.NoError(t, err, "Reconciliations should succeed")
 
-		assert.Equal(t, 2, len(reconciliations), "Should have 2 reconciliations")
+		assert.Len(t, reconciliations, 1, "Cancelled reconciliation should not appear")
 	})
 
 	// Test CancelReconciliation
@@ -1533,15 +1772,26 @@ func TestReconciliationCRUD(t *testing.T) {
 		statementDate := time.Date(2024, 1, 31, 23, 59, 59, 0, time.UTC)
 		statementBalance := NewMoney(10000, CurrencyUSD)
 
+		// Create a deposit and clear it to prove the unclear step happens on cancel
+		deposit, err := db.CreateDeposit(account.ID, statementBalance, TransactionMethodElectronicTransfer, "Test", statementDate.Add(-24*time.Hour))
+		require.NoError(t, err, "Failed to create deposit")
+
 		reconciliation, err := db.StartReconciliation(account.ID, statementDate, statementBalance)
 		require.NoError(t, err, "Failed to start reconciliation")
+		require.NoError(t, db.ClearTransaction(reconciliation.ID, deposit.ID))
 
-		cancelled, err := db.CancelReconciliation(reconciliation.ID)
-		require.NoError(t, err, "CancelReconciliation should succeed")
+		require.NoError(t, db.CancelReconciliation(reconciliation.ID), "CancelReconciliation should succeed")
 
-		assert.Equal(t, ReconciliationStatusCancelled, cancelled.Status)
+		// Record is gone
+		_, err = db.Reconciliation(reconciliation.ID)
+		assert.Error(t, err, "Cancelled reconciliation should not be retrievable")
 
-		// Verify can start a new one after cancellation
+		// Transaction is uncleared
+		var tx Transaction
+		require.NoError(t, db.conn.Get(&tx, "SELECT * FROM transactions WHERE id = ?", deposit.ID))
+		assert.Nil(t, tx.ReconciliationID, "Transaction should be uncleared after cancel")
+
+		// A fresh reconciliation can start on the same account
 		_, err = db.StartReconciliation(account.ID, statementDate, statementBalance)
 		require.NoError(t, err, "Should be able to start new reconciliation after cancellation")
 	})
@@ -1575,7 +1825,7 @@ func TestReconciliationCRUD(t *testing.T) {
 		assert.Equal(t, ReconciliationStatusCompleted, completed.Status)
 
 		// Try to cancel it
-		_, err = db.CancelReconciliation(completed.ID)
+		err = db.CancelReconciliation(completed.ID)
 		assert.Error(t, err, "Expected error when cancelling completed reconciliation")
 	})
 
@@ -1812,10 +2062,9 @@ func TestReconciliationCRUD(t *testing.T) {
 		err = db.UndoReconciliation(completed.ID)
 		require.NoError(t, err, "UndoReconciliation should succeed")
 
-		// Verify status changed to cancelled
-		undone, err := db.Reconciliation(completed.ID)
-		require.NoError(t, err, "Failed to get undone reconciliation")
-		assert.Equal(t, ReconciliationStatusCancelled, undone.Status)
+		// Record is gone
+		_, err = db.Reconciliation(completed.ID)
+		assert.Error(t, err, "Undone reconciliation should not be retrievable")
 
 		// Verify transaction is uncleared
 		var tx Transaction
@@ -1862,13 +2111,20 @@ func TestReconciliationCRUD(t *testing.T) {
 		assert.Error(t, err, "Expected error when undoing non-most-recent reconciliation")
 		assert.Contains(t, err.Error(), "most recent")
 
-		// Undo second (most recent) should work
+		// Undo second (most recent) should work and remove the record entirely
 		err = db.UndoReconciliation(completed2.ID)
 		require.NoError(t, err, "Undo most recent should succeed")
+		_, err = db.Reconciliation(completed2.ID)
+		assert.Error(t, err, "Undone reconciliation should be deleted")
 
 		// Now first becomes most recent, undo should work
 		err = db.UndoReconciliation(completed1.ID)
 		require.NoError(t, err, "Undo first should succeed after second is undone")
+
+		// Both reconciliations are gone
+		remaining, err := db.Reconciliations(account.ID)
+		require.NoError(t, err)
+		assert.Empty(t, remaining, "No reconciliations should remain after undoing both")
 	})
 
 	// Test UnclearTransaction from completed reconciliation (should fail)
@@ -1917,8 +2173,7 @@ func TestReconciliationCRUD(t *testing.T) {
 		require.NoError(t, err, "Clearing already cleared transaction in same reconciliation should be idempotent")
 
 		// Cancel and start new reconciliation
-		_, err = db.CancelReconciliation(reconciliation.ID)
-		require.NoError(t, err, "Failed to cancel reconciliation")
+		require.NoError(t, db.CancelReconciliation(reconciliation.ID), "Failed to cancel reconciliation")
 
 		// After cancellation, transaction is uncleared
 		reconciliation2, err := db.StartReconciliation(account.ID, statementDate, NewMoney(500, CurrencyUSD))
