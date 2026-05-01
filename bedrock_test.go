@@ -1252,6 +1252,66 @@ func TestTransactionCRUD(t *testing.T) {
 		_, err = db.AssignReceiptToTransaction(receipt.ID, withdrawal.ID)
 		assert.Error(t, err, "Expected error when assigning receipt to withdrawal transaction")
 	})
+
+	// Test Transaction lookup by ID
+	t.Run("Transaction", func(t *testing.T) {
+		created, err := db.CreateDeposit(account.ID, amount, TransactionMethodInBranch, "Lookup test", transactedAt)
+		require.NoError(t, err, "Failed to create deposit for Transaction lookup")
+
+		fetched, err := db.Transaction(created.ID)
+		require.NoError(t, err, "Transaction lookup should succeed")
+		assert.Equal(t, created.ID, fetched.ID)
+		assert.Equal(t, created.Amount, fetched.Amount)
+
+		_, err = db.Transaction(ID(99999))
+		assert.Error(t, err, "Transaction lookup for missing ID should fail")
+	})
+
+	// Test TransactionsByPayee
+	t.Run("TransactionsByPayee", func(t *testing.T) {
+		// Two withdrawals to the same payee at different times
+		expenses := []ExpenseItem{{CategoryID: category.ID, Amount: NewMoney(2500, CurrencyUSD)}}
+		earlier, err := db.CreateWithdrawal(account.ID, party.ID, TransactionMethodCheck, "Earlier",
+			time.Date(2025, 1, 5, 12, 0, 0, 0, time.UTC), nil, expenses)
+		require.NoError(t, err)
+		later, err := db.CreateWithdrawal(account.ID, party.ID, TransactionMethodCheck, "Later",
+			time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC), nil, expenses)
+		require.NoError(t, err)
+
+		txs, err := db.TransactionsByPayee(party.ID)
+		require.NoError(t, err, "TransactionsByPayee should succeed")
+		require.GreaterOrEqual(t, len(txs), 2, "should return at least the two created withdrawals")
+
+		// Verify ordering: most recent first
+		laterIdx, earlierIdx := -1, -1
+		for i, tx := range txs {
+			switch tx.ID {
+			case later.ID:
+				laterIdx = i
+			case earlier.ID:
+				earlierIdx = i
+			}
+		}
+		require.NotEqual(t, -1, laterIdx, "later withdrawal should be present")
+		require.NotEqual(t, -1, earlierIdx, "earlier withdrawal should be present")
+		assert.Less(t, laterIdx, earlierIdx, "newer transactions should appear before older ones")
+
+		// Deposits must not be returned even though they share the account
+		deposit, err := db.CreateDeposit(account.ID, amount, TransactionMethodElectronicTransfer, "Deposit", transactedAt)
+		require.NoError(t, err)
+		txs, err = db.TransactionsByPayee(party.ID)
+		require.NoError(t, err)
+		for _, tx := range txs {
+			assert.NotEqual(t, deposit.ID, tx.ID, "deposits should not appear in TransactionsByPayee")
+		}
+
+		// A different party with no transactions should yield empty results
+		other, err := db.CreateParty("Other Person", nil, nil, nil, nil)
+		require.NoError(t, err)
+		txs, err = db.TransactionsByPayee(other.ID)
+		require.NoError(t, err)
+		assert.Empty(t, txs, "party with no withdrawals should return empty slice")
+	})
 }
 
 func TestExpenseValidation(t *testing.T) {

@@ -245,3 +245,36 @@ func (db *DB) HighestCheckNumber(accountID ID) (int, error) {
 
 	return highest, nil
 }
+
+// Transaction retrieves a single transaction by ID.
+func (db *DB) Transaction(id ID) (*Transaction, error) {
+	query, args := db.sq.Select("*").
+		From("transactions").
+		Where("id = ?", id).
+		MustSql()
+
+	var transaction Transaction
+	if err := db.conn.Get(&transaction, query, args...); err != nil {
+		return nil, fmt.Errorf("failed to get transaction: %w", err)
+	}
+
+	return &transaction, nil
+}
+
+// TransactionsByPayee retrieves all withdrawal transactions where the given
+// party is the payee, newest first. Deposits are not included because the
+// payee_id column is only set on withdrawals.
+func (db *DB) TransactionsByPayee(payeeID ID) ([]Transaction, error) {
+	query, args := db.sq.Select("*").
+		From("transactions").
+		Where("payee_id = ?", payeeID).
+		OrderBy("transacted_at DESC", "id DESC").
+		MustSql()
+
+	var transactions []Transaction
+	if err := db.conn.Select(&transactions, query, args...); err != nil {
+		return nil, fmt.Errorf("failed to get transactions by payee: %w", err)
+	}
+
+	return transactions, nil
+}
