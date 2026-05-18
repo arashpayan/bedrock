@@ -834,24 +834,30 @@ func TestReceiptCRUD(t *testing.T) {
 
 	// Test CreateReceipt
 	t.Run("CreateReceipt", func(t *testing.T) {
-		receipt, err := db.CreateReceipt(party.ID, soldAt)
+		const memo = "Sunday offering"
+		receipt, err := db.CreateReceipt(party.ID, soldAt, memo)
 		require.NoError(t, err, "CreateReceipt should succeed")
 
 		assert.Equal(t, party.ID, receipt.CustomerID)
 		assert.Equal(t, soldAt.Round(0), receipt.SoldAt)
+		assert.Equal(t, memo, receipt.Memo, "Memo should round-trip from the insert")
 		assert.NotEmpty(t, receipt.HumanID, "HumanID should not be empty")
 		assert.Nil(t, receipt.TransactionID)
 		assert.NotZero(t, receipt.ID, "ID should not be zero")
+
+		fetched, err := db.Receipt(receipt.ID)
+		require.NoError(t, err)
+		assert.Equal(t, memo, fetched.Memo, "Memo should round-trip through SELECT")
 	})
 
 	// Test CreateReceipt with invalid customer
 	t.Run("CreateReceiptInvalidCustomer", func(t *testing.T) {
-		_, err := db.CreateReceipt(99999, soldAt)
+		_, err := db.CreateReceipt(99999, soldAt, "")
 		assert.Error(t, err, "Expected error for invalid customer ID")
 	})
 
 	// Create a receipt for other tests with a slightly different timestamp
-	receipt, err := db.CreateReceipt(party.ID, soldAt.Add(time.Millisecond))
+	receipt, err := db.CreateReceipt(party.ID, soldAt.Add(time.Millisecond), "")
 	require.NoError(t, err, "Failed to create test receipt")
 
 	// Test Receipt retrieval
@@ -943,7 +949,7 @@ func TestCreateReceiptWithItems(t *testing.T) {
 			{ItemID: item.ID, Description: "First", Price: NewMoney(1000, CurrencyUSD)},
 			{ItemID: item.ID, Description: "Second", Price: NewMoney(2500, CurrencyUSD)},
 		}
-		receipt, err := db.CreateReceiptWithItems(party.ID, soldAt, items)
+		receipt, err := db.CreateReceiptWithItems(party.ID, soldAt, "", items)
 		require.NoError(t, err)
 		assert.NotZero(t, receipt.ID)
 		assert.NotEmpty(t, receipt.HumanID)
@@ -970,7 +976,7 @@ func TestCreateReceiptWithItems(t *testing.T) {
 			{ItemID: item.ID, Description: "orphan sentinel", Price: NewMoney(1000, CurrencyUSD)},
 			{ItemID: 99999, Description: "bad", Price: NewMoney(500, CurrencyUSD)},
 		}
-		_, err := db.CreateReceiptWithItems(party.ID, soldAt, badItems)
+		_, err := db.CreateReceiptWithItems(party.ID, soldAt, "", badItems)
 		require.Error(t, err)
 
 		var receiptsAfter, itemsAfter int
@@ -987,7 +993,7 @@ func TestCreateReceiptWithItems(t *testing.T) {
 	})
 
 	t.Run("RejectsEmptyItems", func(t *testing.T) {
-		_, err := db.CreateReceiptWithItems(party.ID, soldAt, nil)
+		_, err := db.CreateReceiptWithItems(party.ID, soldAt, "", nil)
 		assert.Error(t, err)
 	})
 
@@ -996,7 +1002,7 @@ func TestCreateReceiptWithItems(t *testing.T) {
 			{ItemID: item.ID, Price: NewMoney(1000, CurrencyUSD)},
 			{ItemID: item.ID, Price: NewMoney(500, CurrencyCAD)},
 		}
-		_, err := db.CreateReceiptWithItems(party.ID, soldAt, items)
+		_, err := db.CreateReceiptWithItems(party.ID, soldAt, "", items)
 		assert.Error(t, err)
 	})
 
@@ -1004,7 +1010,7 @@ func TestCreateReceiptWithItems(t *testing.T) {
 		items := []ReceiptItemInput{
 			{ItemID: item.ID, Price: NewMoney(0, CurrencyUSD)},
 		}
-		_, err := db.CreateReceiptWithItems(party.ID, soldAt, items)
+		_, err := db.CreateReceiptWithItems(party.ID, soldAt, "", items)
 		assert.Error(t, err)
 	})
 }
@@ -1021,7 +1027,7 @@ func TestCreateDepositWithReceipts(t *testing.T) {
 		items := []ReceiptItemInput{
 			{ItemID: item.ID, Price: NewMoney(2000, CurrencyUSD)},
 		}
-		r, err := db.CreateReceiptWithItems(party.ID, soldAt, items)
+		r, err := db.CreateReceiptWithItems(party.ID, soldAt, "", items)
 		require.NoError(t, err)
 		return r
 	}
@@ -1217,7 +1223,7 @@ func TestTransactionCRUD(t *testing.T) {
 	// Test receipt assignment workflow
 	t.Run("ReceiptAssignmentWorkflow", func(t *testing.T) {
 		// Create a receipt
-		receipt, err := db.CreateReceipt(party.ID, transactedAt)
+		receipt, err := db.CreateReceipt(party.ID, transactedAt, "")
 		require.NoError(t, err, "Failed to create receipt")
 
 		// Create a deposit transaction
@@ -1657,7 +1663,7 @@ func TestLedgerEdgeCases(t *testing.T) {
 	// Test with receipts for enrichment
 	t.Run("LedgerEnrichmentWithReceipts", func(t *testing.T) {
 		// Create a receipt and deposit
-		receipt, err := db.CreateReceipt(party.ID, time.Now())
+		receipt, err := db.CreateReceipt(party.ID, time.Now(), "")
 		require.NoError(t, err, "Failed to create receipt")
 
 		deposit, err := db.CreateDeposit(account.ID, NewMoney(5000, CurrencyUSD), TransactionMethodElectronicTransfer, "Test deposit", time.Now())

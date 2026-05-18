@@ -2,7 +2,7 @@
 package bedrock
 
 import (
-	_ "embed"
+	"context"
 	"fmt"
 	"time"
 
@@ -10,9 +10,6 @@ import (
 	"github.com/jmoiron/sqlx"
 	_ "modernc.org/sqlite"
 )
-
-//go:embed schema.sql
-var schemaSQL string
 
 // ID represents a unique identifier for entities in the system
 type ID int64
@@ -124,6 +121,7 @@ type Receipt struct {
 	CustomerID    ID        `db:"customer_id"`    // foreign key to Party (contributor)
 	SoldAt        time.Time `db:"sold_at"`        // when contribution was received
 	TransactionID *ID       `db:"transaction_id"` // foreign key to deposit transaction (nil if not yet deposited)
+	Memo          string    `db:"memo"`           // treasurer's free-form note; empty string when unset
 	Total         Money     `db:"-"`              // computed from receipt items, not stored directly
 }
 
@@ -312,7 +310,9 @@ func New(filepath string, assemblyName string, timezone *time.Location, defaultC
 	return db, nil
 }
 
-// Open opens or creates a bedrock database file
+// Open opens or creates a bedrock database file. On open it runs any pending
+// schema migrations to bring the file up to currentSchemaVersion. If the file
+// is at a version newer than this binary knows about, Open returns an error.
 func Open(filepath string) (*DB, error) {
 	conn, err := sqlx.Connect("sqlite", filepath+"?_pragma=foreign_keys(1)")
 	if err != nil {
@@ -324,10 +324,9 @@ func Open(filepath string) (*DB, error) {
 		sq:   squirrel.StatementBuilder.PlaceholderFormat(squirrel.Question),
 	}
 
-	// Initialize database schema
-	if err := db.initSchema(); err != nil {
+	if err := db.migrate(context.Background()); err != nil {
 		conn.Close()
-		return nil, fmt.Errorf("failed to initialize schema: %w", err)
+		return nil, err
 	}
 
 	return db, nil
@@ -339,10 +338,4 @@ func (db *DB) Close() error {
 		return db.conn.Close()
 	}
 	return nil
-}
-
-// initSchema creates the necessary tables if they don't exist
-func (db *DB) initSchema() error {
-	_, err := db.conn.Exec(schemaSQL)
-	return err
 }

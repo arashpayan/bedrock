@@ -5,8 +5,9 @@ import (
 	"time"
 )
 
-// CreateReceipt creates a new receipt for a contribution
-func (db *DB) CreateReceipt(customerID ID, soldAt time.Time) (*Receipt, error) {
+// CreateReceipt creates a new receipt for a contribution. memo is the
+// treasurer's free-form note; pass an empty string when no note is wanted.
+func (db *DB) CreateReceipt(customerID ID, soldAt time.Time, memo string) (*Receipt, error) {
 	// Get assembly timezone to generate HumanID
 	var assemblyTimezone string
 	err := db.conn.Get(&assemblyTimezone, "SELECT timezone FROM assembly LIMIT 1")
@@ -34,6 +35,7 @@ func (db *DB) CreateReceipt(customerID ID, soldAt time.Time) (*Receipt, error) {
 			"human_id":    humanID,
 			"customer_id": customerID,
 			"sold_at":     soldAt.Round(0),
+			"memo":        memo,
 		}).
 		Suffix("RETURNING *").
 		MustSql()
@@ -48,8 +50,9 @@ func (db *DB) CreateReceipt(customerID ID, soldAt time.Time) (*Receipt, error) {
 
 // CreateReceiptWithItems creates a receipt together with all of its line items
 // in a single database transaction. If any item fails to insert, the receipt
-// is rolled back and no state is left behind.
-func (db *DB) CreateReceiptWithItems(customerID ID, soldAt time.Time, items []ReceiptItemInput) (*Receipt, error) {
+// is rolled back and no state is left behind. memo is the treasurer's
+// free-form note; pass an empty string when no note is wanted.
+func (db *DB) CreateReceiptWithItems(customerID ID, soldAt time.Time, memo string, items []ReceiptItemInput) (*Receipt, error) {
 	if len(items) == 0 {
 		return nil, fmt.Errorf("at least one receipt item is required")
 	}
@@ -87,6 +90,7 @@ func (db *DB) CreateReceiptWithItems(customerID ID, soldAt time.Time, items []Re
 			"human_id":    humanID,
 			"customer_id": customerID,
 			"sold_at":     soldAt.Round(0),
+			"memo":        memo,
 		}).
 		Suffix("RETURNING *").
 		MustSql()
@@ -122,7 +126,7 @@ func (db *DB) CreateReceiptWithItems(customerID ID, soldAt time.Time, items []Re
 func (db *DB) Receipt(id ID) (*Receipt, error) {
 	var receipt Receipt
 
-	query, args := db.sq.Select("id", "human_id", "customer_id", "sold_at", "transaction_id", "created_at", "modified_at").
+	query, args := db.sq.Select("id", "human_id", "customer_id", "sold_at", "transaction_id", "memo", "created_at", "modified_at").
 		From("receipts").
 		Where("id = ?", id).
 		MustSql()
@@ -139,7 +143,7 @@ func (db *DB) Receipt(id ID) (*Receipt, error) {
 func (db *DB) ReceiptByHumanID(humanID string) (*Receipt, error) {
 	var receipt Receipt
 
-	query, args := db.sq.Select("id", "human_id", "customer_id", "sold_at", "transaction_id", "created_at", "modified_at").
+	query, args := db.sq.Select("id", "human_id", "customer_id", "sold_at", "transaction_id", "memo", "created_at", "modified_at").
 		From("receipts").
 		Where("human_id = ?", humanID).
 		MustSql()
@@ -156,7 +160,7 @@ func (db *DB) ReceiptByHumanID(humanID string) (*Receipt, error) {
 func (db *DB) ReceiptsByCustomer(customerID ID) ([]Receipt, error) {
 	var receipts []Receipt
 
-	query, args := db.sq.Select("id", "human_id", "customer_id", "sold_at", "transaction_id", "created_at", "modified_at").
+	query, args := db.sq.Select("id", "human_id", "customer_id", "sold_at", "transaction_id", "memo", "created_at", "modified_at").
 		From("receipts").
 		Where("customer_id = ?", customerID).
 		OrderBy("sold_at DESC").
@@ -174,7 +178,7 @@ func (db *DB) ReceiptsByCustomer(customerID ID) ([]Receipt, error) {
 func (db *DB) ReceiptsByTransaction(transactionID ID) ([]Receipt, error) {
 	var receipts []Receipt
 
-	query, args := db.sq.Select("id", "human_id", "customer_id", "sold_at", "transaction_id", "created_at", "modified_at").
+	query, args := db.sq.Select("id", "human_id", "customer_id", "sold_at", "transaction_id", "memo", "created_at", "modified_at").
 		From("receipts").
 		Where("transaction_id = ?", transactionID).
 		OrderBy("sold_at DESC").
@@ -192,7 +196,7 @@ func (db *DB) ReceiptsByTransaction(transactionID ID) ([]Receipt, error) {
 func (db *DB) UndepositedReceipts() ([]Receipt, error) {
 	var receipts []Receipt
 
-	query, args := db.sq.Select("id", "human_id", "customer_id", "sold_at", "transaction_id", "created_at", "modified_at").
+	query, args := db.sq.Select("id", "human_id", "customer_id", "sold_at", "transaction_id", "memo", "created_at", "modified_at").
 		From("receipts").
 		Where("transaction_id IS NULL").
 		OrderBy("sold_at DESC").
@@ -210,7 +214,7 @@ func (db *DB) UndepositedReceipts() ([]Receipt, error) {
 func (db *DB) Receipts() ([]Receipt, error) {
 	var receipts []Receipt
 
-	query, args := db.sq.Select("id", "human_id", "customer_id", "sold_at", "transaction_id", "created_at", "modified_at").
+	query, args := db.sq.Select("id", "human_id", "customer_id", "sold_at", "transaction_id", "memo", "created_at", "modified_at").
 		From("receipts").
 		OrderBy("sold_at DESC").
 		MustSql()

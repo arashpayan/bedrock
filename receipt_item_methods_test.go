@@ -30,7 +30,7 @@ func TestReceiptItemCRUD(t *testing.T) {
 	require.NoError(t, err, "Failed to create item 2")
 
 	// Create a receipt
-	receipt, err := db.CreateReceipt(party.ID, time.Now())
+	receipt, err := db.CreateReceipt(party.ID, time.Now(), "")
 	require.NoError(t, err, "Failed to create receipt")
 
 	t.Run("CreateReceiptItem", func(t *testing.T) {
@@ -116,7 +116,7 @@ func TestReceiptItemCRUD(t *testing.T) {
 
 	t.Run("ReceiptItems", func(t *testing.T) {
 		// Create a new receipt with multiple items
-		receipt2, err := db.CreateReceipt(party.ID, time.Now())
+		receipt2, err := db.CreateReceipt(party.ID, time.Now(), "")
 		require.NoError(t, err, "Failed to create receipt 2")
 
 		_, err = db.CreateReceiptItem(receipt2.ID, item1.ID, "Item A", NewMoney(1000, CurrencyUSD))
@@ -139,7 +139,7 @@ func TestReceiptItemCRUD(t *testing.T) {
 
 	t.Run("ReceiptItemsEmpty", func(t *testing.T) {
 		// Create a receipt with no items
-		receipt3, err := db.CreateReceipt(party.ID, time.Now())
+		receipt3, err := db.CreateReceipt(party.ID, time.Now(), "")
 		require.NoError(t, err, "Failed to create receipt 3")
 
 		items, err := db.ReceiptItems(receipt3.ID)
