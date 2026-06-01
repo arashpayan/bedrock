@@ -38,7 +38,7 @@ func setupTestData(t *testing.T, db *DB) (assembly *Assembly, account *BankAccou
 	require.NoError(t, err, "Failed to create test assembly")
 
 	// Create test bank account
-	account, err = db.CreateBankAccount("Test Checking", AccountTypeChecking, CurrencyUSD, nil, "Test account", true, Money{})
+	account, err = db.CreateBankAccount("Test Checking", AccountTypeChecking, CurrencyUSD, nil, "Test account", true, Money{}, time.Time{})
 	require.NoError(t, err, "Failed to create test bank account")
 
 	// Create test item
@@ -561,7 +561,7 @@ func TestBankAccountCRUD(t *testing.T) {
 
 	// Test CreateBankAccount
 	t.Run("CreateBankAccount", func(t *testing.T) {
-		account, err := db.CreateBankAccount("Main Checking", AccountTypeChecking, CurrencyUSD, nil, "Primary checking account", true, Money{})
+		account, err := db.CreateBankAccount("Main Checking", AccountTypeChecking, CurrencyUSD, nil, "Primary checking account", true, Money{}, time.Time{})
 		require.NoError(t, err, "CreateBankAccount should succeed")
 
 		assert.Equal(t, "Main Checking", account.Name)
@@ -574,24 +574,24 @@ func TestBankAccountCRUD(t *testing.T) {
 
 	// Test CreateBankAccount with empty name
 	t.Run("CreateBankAccountEmptyName", func(t *testing.T) {
-		_, err := db.CreateBankAccount("", AccountTypeChecking, CurrencyUSD, nil, "", true, Money{})
+		_, err := db.CreateBankAccount("", AccountTypeChecking, CurrencyUSD, nil, "", true, Money{}, time.Time{})
 		assert.Error(t, err, "Expected error for empty name")
 	})
 
 	// Test CreateBankAccount earmark without parent
 	t.Run("CreateEarmarkWithoutParent", func(t *testing.T) {
-		_, err := db.CreateBankAccount("Orphan Earmark", AccountTypeEarmark, CurrencyUSD, nil, "", true, Money{})
+		_, err := db.CreateBankAccount("Orphan Earmark", AccountTypeEarmark, CurrencyUSD, nil, "", true, Money{}, time.Time{})
 		assert.Error(t, err, "Expected error for earmark without parent")
 		assert.Contains(t, err.Error(), "must have a parent")
 	})
 
 	// Create accounts for hierarchy tests
-	parentAccount, err := db.CreateBankAccount("Parent Account", AccountTypeChecking, CurrencyUSD, nil, "Parent account", true, Money{})
+	parentAccount, err := db.CreateBankAccount("Parent Account", AccountTypeChecking, CurrencyUSD, nil, "Parent account", true, Money{}, time.Time{})
 	require.NoError(t, err, "Failed to create parent account")
 
 	// Test CreateBankAccount with parent
 	t.Run("CreateBankAccountWithParent", func(t *testing.T) {
-		childAccount, err := db.CreateBankAccount("Child Account", AccountTypeEarmark, CurrencyUSD, &parentAccount.ID, "Child account", true, Money{})
+		childAccount, err := db.CreateBankAccount("Child Account", AccountTypeEarmark, CurrencyUSD, &parentAccount.ID, "Child account", true, Money{}, time.Time{})
 		require.NoError(t, err, "CreateBankAccount with parent should succeed")
 
 		require.NotNil(t, childAccount.ParentID)
@@ -601,11 +601,11 @@ func TestBankAccountCRUD(t *testing.T) {
 	// Test CreateBankAccount earmark with earmark parent (should fail)
 	t.Run("CreateEarmarkWithEarmarkParent", func(t *testing.T) {
 		// First create an earmark under the checking account
-		earmark1, err := db.CreateBankAccount("Earmark 1", AccountTypeEarmark, CurrencyUSD, &parentAccount.ID, "", true, Money{})
+		earmark1, err := db.CreateBankAccount("Earmark 1", AccountTypeEarmark, CurrencyUSD, &parentAccount.ID, "", true, Money{}, time.Time{})
 		require.NoError(t, err)
 
 		// Try to create another earmark under the first earmark (should fail)
-		_, err = db.CreateBankAccount("Earmark 2", AccountTypeEarmark, CurrencyUSD, &earmark1.ID, "", true, Money{})
+		_, err = db.CreateBankAccount("Earmark 2", AccountTypeEarmark, CurrencyUSD, &earmark1.ID, "", true, Money{}, time.Time{})
 		assert.Error(t, err, "Expected error for earmark with earmark parent")
 		assert.Contains(t, err.Error(), "checking or savings parent")
 	})
@@ -613,7 +613,7 @@ func TestBankAccountCRUD(t *testing.T) {
 	// Test CreateBankAccount sub-account with mismatched currency (should fail)
 	t.Run("CreateSubAccountCurrencyMismatch", func(t *testing.T) {
 		// Parent is USD, try to create CAD sub-account
-		_, err := db.CreateBankAccount("CAD Earmark", AccountTypeEarmark, CurrencyCAD, &parentAccount.ID, "", true, Money{})
+		_, err := db.CreateBankAccount("CAD Earmark", AccountTypeEarmark, CurrencyCAD, &parentAccount.ID, "", true, Money{}, time.Time{})
 		assert.Error(t, err, "Expected error for currency mismatch")
 		assert.Contains(t, err.Error(), "same currency as their parent")
 	})
@@ -621,12 +621,12 @@ func TestBankAccountCRUD(t *testing.T) {
 	// Test non-earmark account with parent (should fail)
 	t.Run("CreateNonEarmarkWithParent", func(t *testing.T) {
 		// Try to create a checking account with a parent (should fail)
-		_, err := db.CreateBankAccount("Sub Checking", AccountTypeChecking, CurrencyUSD, &parentAccount.ID, "", true, Money{})
+		_, err := db.CreateBankAccount("Sub Checking", AccountTypeChecking, CurrencyUSD, &parentAccount.ID, "", true, Money{}, time.Time{})
 		assert.Error(t, err, "Expected error for non-earmark with parent")
 		assert.Contains(t, err.Error(), "only earmark accounts can have a parent")
 
 		// Try to create a savings account with a parent (should fail)
-		_, err = db.CreateBankAccount("Sub Savings", AccountTypeSavings, CurrencyUSD, &parentAccount.ID, "", true, Money{})
+		_, err = db.CreateBankAccount("Sub Savings", AccountTypeSavings, CurrencyUSD, &parentAccount.ID, "", true, Money{}, time.Time{})
 		assert.Error(t, err, "Expected error for non-earmark with parent")
 		assert.Contains(t, err.Error(), "only earmark accounts can have a parent")
 	})
@@ -634,14 +634,15 @@ func TestBankAccountCRUD(t *testing.T) {
 	// Test CreateBankAccount with invalid parent
 	t.Run("CreateBankAccountInvalidParent", func(t *testing.T) {
 		invalidParentID := ID(99999)
-		_, err := db.CreateBankAccount("Invalid Parent", AccountTypeEarmark, CurrencyUSD, &invalidParentID, "", true, Money{})
+		_, err := db.CreateBankAccount("Invalid Parent", AccountTypeEarmark, CurrencyUSD, &invalidParentID, "", true, Money{}, time.Time{})
 		assert.Error(t, err, "Expected error for invalid parent ID")
 	})
 
 	// Test CreateBankAccount with opening balance
 	t.Run("CreateBankAccountWithOpeningBalance", func(t *testing.T) {
 		openingBalance := NewMoney(150000, CurrencyUSD) // $1,500.00
-		account, err := db.CreateBankAccount("Opening Balance Account", AccountTypeChecking, CurrencyUSD, nil, "", true, openingBalance)
+		openingDate := time.Date(2024, 3, 15, 12, 0, 0, 0, time.UTC)
+		account, err := db.CreateBankAccount("Opening Balance Account", AccountTypeChecking, CurrencyUSD, nil, "", true, openingBalance, openingDate)
 		require.NoError(t, err, "CreateBankAccount with opening balance should succeed")
 
 		// Verify the opening balance transaction was created
@@ -650,19 +651,28 @@ func TestBankAccountCRUD(t *testing.T) {
 		assert.Equal(t, int64(150000), balance.Amount, "Balance should equal opening balance")
 		assert.Equal(t, CurrencyUSD, balance.Currency, "Currency should match")
 
-		// Verify the transaction exists with correct memo
+		// Verify the transaction exists with correct memo, amount, and date
 		transactions, err := db.TransactionsForAccount(account.ID, false, nil)
 		require.NoError(t, err, "TransactionsForAccount should succeed")
 		require.Len(t, transactions, 1, "Should have exactly one transaction")
 		assert.Equal(t, "Opening Balance", transactions[0].Memo, "Transaction memo should be 'Opening Balance'")
 		assert.Equal(t, int64(150000), transactions[0].Amount, "Transaction amount should match opening balance")
 		assert.Nil(t, transactions[0].Method, "Opening balance should have no transaction method")
+		assert.True(t, transactions[0].TransactedAt.Equal(openingDate), "Transaction date should match openingDate (got %s, want %s)", transactions[0].TransactedAt, openingDate)
+	})
+
+	// Test CreateBankAccount rejects a positive opening balance without a date
+	t.Run("CreateBankAccountOpeningBalanceMissingDate", func(t *testing.T) {
+		openingBalance := NewMoney(10000, CurrencyUSD)
+		_, err := db.CreateBankAccount("Missing Date", AccountTypeChecking, CurrencyUSD, nil, "", true, openingBalance, time.Time{})
+		assert.Error(t, err, "Expected error for missing opening date")
+		assert.Contains(t, err.Error(), "opening date must be specified")
 	})
 
 	// Test CreateBankAccount with opening balance currency mismatch
 	t.Run("CreateBankAccountOpeningBalanceCurrencyMismatch", func(t *testing.T) {
 		openingBalance := NewMoney(10000, CurrencyCAD) // CAD balance for USD account
-		_, err := db.CreateBankAccount("Currency Mismatch", AccountTypeChecking, CurrencyUSD, nil, "", true, openingBalance)
+		_, err := db.CreateBankAccount("Currency Mismatch", AccountTypeChecking, CurrencyUSD, nil, "", true, openingBalance, time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC))
 		assert.Error(t, err, "Expected error for opening balance currency mismatch")
 		assert.Contains(t, err.Error(), "does not match account currency")
 	})
@@ -670,7 +680,7 @@ func TestBankAccountCRUD(t *testing.T) {
 	// Test CreateBankAccount with negative opening balance
 	t.Run("CreateBankAccountNegativeOpeningBalance", func(t *testing.T) {
 		openingBalance := Money{Amount: -10000, Currency: CurrencyUSD}
-		_, err := db.CreateBankAccount("Negative Balance", AccountTypeChecking, CurrencyUSD, nil, "", true, openingBalance)
+		_, err := db.CreateBankAccount("Negative Balance", AccountTypeChecking, CurrencyUSD, nil, "", true, openingBalance, time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC))
 		assert.Error(t, err, "Expected error for negative opening balance")
 		assert.Contains(t, err.Error(), "cannot be negative")
 	})
@@ -678,7 +688,7 @@ func TestBankAccountCRUD(t *testing.T) {
 	// Test CreateBankAccount earmark with opening balance
 	t.Run("CreateEarmarkWithOpeningBalance", func(t *testing.T) {
 		openingBalance := NewMoney(50000, CurrencyUSD) // $500.00
-		earmark, err := db.CreateBankAccount("Earmark With Balance", AccountTypeEarmark, CurrencyUSD, &parentAccount.ID, "", true, openingBalance)
+		earmark, err := db.CreateBankAccount("Earmark With Balance", AccountTypeEarmark, CurrencyUSD, &parentAccount.ID, "", true, openingBalance, time.Date(2024, 6, 1, 12, 0, 0, 0, time.UTC))
 		require.NoError(t, err, "CreateBankAccount earmark with opening balance should succeed")
 
 		// Verify the opening balance transaction was created
@@ -778,7 +788,7 @@ func TestBankAccountCRUD(t *testing.T) {
 
 	// Partial updates leave other fields untouched
 	t.Run("UpdateBankAccountPartial", func(t *testing.T) {
-		account, err := db.CreateBankAccount("Partial Update", AccountTypeChecking, CurrencyUSD, nil, "initial", true, Money{})
+		account, err := db.CreateBankAccount("Partial Update", AccountTypeChecking, CurrencyUSD, nil, "initial", true, Money{}, time.Time{})
 		require.NoError(t, err)
 
 		newName := "Partial Update Renamed"
@@ -812,13 +822,58 @@ func TestBankAccountCRUD(t *testing.T) {
 	// Test DeactivateBankAccount
 	t.Run("DeactivateBankAccount", func(t *testing.T) {
 		// Create a new account to deactivate
-		account, err := db.CreateBankAccount("To Deactivate", AccountTypeChecking, CurrencyUSD, nil, "", true, Money{})
+		account, err := db.CreateBankAccount("To Deactivate", AccountTypeChecking, CurrencyUSD, nil, "", true, Money{}, time.Time{})
 		require.NoError(t, err, "Failed to create account")
 
 		deactivated, err := db.DeactivateBankAccount(account.ID)
 		require.NoError(t, err, "DeactivateBankAccount should succeed")
 
 		assert.False(t, deactivated.IsActive, "Account should be inactive after deactivation")
+	})
+
+	// Test OpeningBalanceTransaction returns nil for accounts created without one
+	t.Run("OpeningBalanceTransactionMissing", func(t *testing.T) {
+		account, err := db.CreateBankAccount("No Opening Balance", AccountTypeChecking, CurrencyUSD, nil, "", true, Money{}, time.Time{})
+		require.NoError(t, err, "Failed to create account")
+
+		tx, err := db.OpeningBalanceTransaction(account.ID)
+		require.NoError(t, err, "OpeningBalanceTransaction should not error when none exists")
+		assert.Nil(t, tx, "OpeningBalanceTransaction should be nil when account has no opening balance")
+	})
+
+	// Test OpeningBalanceTransaction and UpdateOpeningBalanceDate
+	t.Run("OpeningBalanceTransactionAndUpdate", func(t *testing.T) {
+		opening := NewMoney(25000, CurrencyUSD)
+		originalDate := time.Date(2024, 1, 15, 12, 0, 0, 0, time.UTC)
+		account, err := db.CreateBankAccount("Editable Opening", AccountTypeChecking, CurrencyUSD, nil, "", true, opening, originalDate)
+		require.NoError(t, err, "Failed to create account")
+
+		tx, err := db.OpeningBalanceTransaction(account.ID)
+		require.NoError(t, err, "OpeningBalanceTransaction should succeed")
+		require.NotNil(t, tx, "Opening balance transaction should exist")
+		assert.True(t, tx.TransactedAt.Equal(originalDate), "Initial transaction date should match openingDate")
+
+		// Update the date
+		newDate := time.Date(2023, 11, 30, 12, 0, 0, 0, time.UTC)
+		require.NoError(t, db.UpdateOpeningBalanceDate(account.ID, newDate), "UpdateOpeningBalanceDate should succeed")
+
+		updated, err := db.OpeningBalanceTransaction(account.ID)
+		require.NoError(t, err, "OpeningBalanceTransaction reload should succeed")
+		require.NotNil(t, updated)
+		assert.True(t, updated.TransactedAt.Equal(newDate), "Transaction date should reflect the update")
+
+		// Zero date is rejected
+		assert.Error(t, db.UpdateOpeningBalanceDate(account.ID, time.Time{}), "Zero date should be rejected")
+	})
+
+	// Test UpdateOpeningBalanceDate errors when the account has no opening balance
+	t.Run("UpdateOpeningBalanceDateMissing", func(t *testing.T) {
+		account, err := db.CreateBankAccount("Update Missing", AccountTypeChecking, CurrencyUSD, nil, "", true, Money{}, time.Time{})
+		require.NoError(t, err, "Failed to create account")
+
+		err = db.UpdateOpeningBalanceDate(account.ID, time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC))
+		assert.Error(t, err, "UpdateOpeningBalanceDate should error when no opening balance exists")
+		assert.Contains(t, err.Error(), "no opening balance transaction")
 	})
 }
 
@@ -1330,7 +1385,7 @@ func TestExpenseValidation(t *testing.T) {
 	// Test currency mismatch between expenses and account
 	t.Run("ExpenseCurrencyMismatch", func(t *testing.T) {
 		// Create CAD account
-		cadAccount, err := db.CreateBankAccount("CAD Account", AccountTypeChecking, CurrencyCAD, nil, "CAD test account", true, Money{})
+		cadAccount, err := db.CreateBankAccount("CAD Account", AccountTypeChecking, CurrencyCAD, nil, "CAD test account", true, Money{}, time.Time{})
 		require.NoError(t, err, "Failed to create CAD account")
 
 		// Try to create withdrawal with USD expenses on CAD account
@@ -1454,7 +1509,7 @@ func TestLedgerFunctionality(t *testing.T) {
 	_ = item
 
 	// Create a child account for testing hierarchical features
-	childAccount, err := db.CreateBankAccount("Child Account", AccountTypeEarmark, CurrencyUSD, &account.ID, "Child of main account", true, Money{})
+	childAccount, err := db.CreateBankAccount("Child Account", AccountTypeEarmark, CurrencyUSD, &account.ID, "Child of main account", true, Money{}, time.Time{})
 	require.NoError(t, err, "Failed to create child account")
 
 	// Create some test transactions with specific dates for testing
@@ -1685,7 +1740,7 @@ func TestLedgerEdgeCases(t *testing.T) {
 	// Test currency consistency
 	t.Run("CurrencyConsistency", func(t *testing.T) {
 		// Create CAD account
-		cadAccount, err := db.CreateBankAccount("CAD Account", AccountTypeChecking, CurrencyCAD, nil, "CAD account", true, Money{})
+		cadAccount, err := db.CreateBankAccount("CAD Account", AccountTypeChecking, CurrencyCAD, nil, "CAD account", true, Money{}, time.Time{})
 		require.NoError(t, err, "Failed to create CAD account")
 
 		// Create CAD transaction
@@ -1734,7 +1789,7 @@ func TestReconciliationCRUD(t *testing.T) {
 		statementDate := time.Date(2024, 1, 31, 23, 59, 59, 0, time.UTC)
 		statementBalance := NewMoney(10000, CurrencyUSD)
 
-		childAccount, err := db.CreateBankAccount("Child Account", AccountTypeEarmark, CurrencyUSD, &account.ID, "Child", true, Money{})
+		childAccount, err := db.CreateBankAccount("Child Account", AccountTypeEarmark, CurrencyUSD, &account.ID, "Child", true, Money{}, time.Time{})
 		require.NoError(t, err, "Failed to create child account")
 
 		_, err = db.StartReconciliation(childAccount.ID, statementDate, statementBalance)
@@ -1937,7 +1992,7 @@ func TestReconciliationCRUD(t *testing.T) {
 		statementDate := time.Date(2024, 1, 31, 23, 59, 59, 0, time.UTC)
 
 		// Create account2 (different root account)
-		account2, err := db.CreateBankAccount("Account 2", AccountTypeChecking, CurrencyUSD, nil, "", true, Money{})
+		account2, err := db.CreateBankAccount("Account 2", AccountTypeChecking, CurrencyUSD, nil, "", true, Money{}, time.Time{})
 		require.NoError(t, err, "Failed to create account2")
 
 		// Create deposit on account2
@@ -1966,7 +2021,7 @@ func TestReconciliationCRUD(t *testing.T) {
 
 		statementDate := time.Date(2024, 1, 31, 23, 59, 59, 0, time.UTC)
 
-		childAccount, err := db.CreateBankAccount("Earmark", AccountTypeEarmark, CurrencyUSD, &account.ID, "Earmark fund", true, Money{})
+		childAccount, err := db.CreateBankAccount("Earmark", AccountTypeEarmark, CurrencyUSD, &account.ID, "Earmark fund", true, Money{}, time.Time{})
 		require.NoError(t, err, "Failed to create child account")
 
 		// Create deposit on child account

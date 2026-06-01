@@ -1,13 +1,23 @@
 package bedrock
 
 import (
+	"database/sql"
+	"errors"
 	"fmt"
+	"time"
 )
+
+// openingBalanceMemo is the memo recorded on the deposit transaction that
+// represents an account's opening balance. It is used as the marker for
+// locating that transaction in OpeningBalanceTransaction and
+// UpdateOpeningBalanceDate.
+const openingBalanceMemo = "Opening Balance"
 
 // CreateBankAccount creates a new bank account.
 // Only earmark accounts can have a parent. Earmarks must have a checking or savings parent.
-// If openingBalance has a positive amount, a deposit transaction is created with memo "Opening Balance".
-func (db *DB) CreateBankAccount(name string, accountType AccountType, currency Currency, parentID *ID, description string, isActive bool, openingBalance Money) (*BankAccount, error) {
+// If openingBalance has a positive amount, a deposit transaction is created with memo "Opening Balance"
+// dated at openingDate. openingDate is ignored when openingBalance is zero.
+func (db *DB) CreateBankAccount(name string, accountType AccountType, currency Currency, parentID *ID, description string, isActive bool, openingBalance Money, openingDate time.Time) (*BankAccount, error) {
 	if name == "" {
 		return nil, fmt.Errorf("account name cannot be empty")
 	}
@@ -23,6 +33,9 @@ func (db *DB) CreateBankAccount(name string, accountType AccountType, currency C
 	}
 	if openingBalance.Amount > 0 && openingBalance.Currency != currency {
 		return nil, fmt.Errorf("opening balance currency %s does not match account currency %s", openingBalance.Currency, currency)
+	}
+	if openingBalance.Amount > 0 && openingDate.IsZero() {
+		return nil, fmt.Errorf("opening date must be specified when opening balance is positive")
 	}
 
 	// Earmark accounts must have a parent that is checking or savings
@@ -85,8 +98,8 @@ func (db *DB) CreateBankAccount(name string, accountType AccountType, currency C
 		SetMap(map[string]any{
 			"account_id":    account.ID,
 			"amount":        openingBalance.Amount,
-			"memo":          "Opening Balance",
-			"transacted_at": account.CreatedAt,
+			"memo":          openingBalanceMemo,
+			"transacted_at": openingDate,
 		}).
 		MustSql()
 	if _, err := tx.Exec(depositQuery, depositArgs...); err != nil {
@@ -187,6 +200,28 @@ func (db *DB) BankAccounts() ([]BankAccount, error) {
 	return accounts, nil
 }
 
+// OpeningBalanceTransaction returns the deposit transaction that represents an
+// account's opening balance, identified by the well-known memo and a NULL
+// transaction method. Returns (nil, nil) when the account has no opening
+// balance transaction — this is a normal state, not an error.
+func (db *DB) OpeningBalanceTransaction(accountID ID) (*Transaction, error) {
+	query, args := db.sq.Select("*").
+		From("transactions").
+		Where("account_id = ?", accountID).
+		Where("memo = ?", openingBalanceMemo).
+		Where("method IS NULL").
+		MustSql()
+
+	var transaction Transaction
+	if err := db.conn.Get(&transaction, query, args...); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to get opening balance transaction: %w", err)
+	}
+	return &transaction, nil
+}
+
 // ActiveBankAccounts retrieves all active bank accounts
 func (db *DB) ActiveBankAccounts() ([]BankAccount, error) {
 	var accounts []BankAccount
@@ -239,6 +274,36 @@ func (db *DB) UpdateBankAccount(id ID, delta BankAccountDelta) (*BankAccount, er
 	}
 
 	return &account, nil
+}
+
+// UpdateOpeningBalanceDate sets the transaction date of an account's opening
+// balance transaction. Returns an error if the account has no opening balance.
+func (db *DB) UpdateOpeningBalanceDate(accountID ID, newDate time.Time) error {
+	if newDate.IsZero() {
+		return fmt.Errorf("opening date cannot be zero")
+	}
+
+	query, args := db.sq.Update("transactions").
+		Set("transacted_at", newDate).
+		Where("account_id = ?", accountID).
+		Where("memo = ?", openingBalanceMemo).
+		Where("method IS NULL").
+		MustSql()
+
+	result, err := db.conn.Exec(query, args...)
+	if err != nil {
+		return fmt.Errorf("failed to update opening balance date: %w", err)
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("failed to get rows affected: %w", err)
+	}
+	if rowsAffected == 0 {
+		return fmt.Errorf("no opening balance transaction found for account %d", accountID)
+	}
+
+	return nil
 }
 
 // DeactivateBankAccount marks a bank account as inactive

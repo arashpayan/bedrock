@@ -85,7 +85,7 @@ func SomeOtherFunction() {
 - Earmark accounts must have a checking or savings parent (cannot be top-level or nested under another earmark)
 - **Only earmark accounts can have a parent** (checking/savings accounts are always top-level)
 - **Sub-accounts must inherit currency from their parent** (enforced in `CreateBankAccount`)
-- **Opening balance support**: Accounts can be created with an initial balance, which creates a deposit transaction with memo "Opening Balance"
+- **Opening balance support**: Accounts can be created with an initial balance and an opening date, which creates a deposit transaction with memo "Opening Balance" dated at the given date. The date can be edited later via `UpdateOpeningBalanceDate`.
 - Integer-based monetary amounts to avoid floating-point precision issues
 
 ## Dependencies
@@ -209,7 +209,7 @@ defer db.Close()
   - **Party CRUD**: CreateParty, Party, PartyByName, PartyByEmail, PartyByBahaiID, ListParties, SearchParties, UpdateParty, DeleteParty
   - **Receipt CRUD**: CreateReceipt (auto HumanID with current time), Receipt, ReceiptByHumanID, ReceiptsByCustomer, ReceiptsByTransaction, UndepositedReceipts, Receipts, AssignReceiptToTransaction, UnassignReceiptFromTransaction, DeleteReceipt
   - **ReceiptItem CRUD**: CreateReceiptItem, ReceiptItem, ReceiptItems, UpdateReceiptItem, DeleteReceiptItem
-  - **BankAccount CRUD**: CreateBankAccount, BankAccount, BankAccountByName, RootBankAccounts, ChildBankAccounts, BankAccounts, ActiveBankAccounts, UpdateBankAccount, DeactivateBankAccount, DeleteBankAccount
+  - **BankAccount CRUD**: CreateBankAccount, BankAccount, BankAccountByName, RootBankAccounts, ChildBankAccounts, BankAccounts, ActiveBankAccounts, OpeningBalanceTransaction, UpdateBankAccount, UpdateOpeningBalanceDate, DeactivateBankAccount, DeleteBankAccount
   - **Transaction CRUD**: CreateDeposit, CreateWithdrawal (with expense categorization and currency validation)
   - **Ledger Operations**: AccountLedger, AccountBalance, AccountBalanceAsOf, TransactionsForAccount, AccountTransactionCount, AllAccountBalances, LastTransactionDate
   - **Reconciliation Operations**: StartReconciliation, Reconciliation, Reconciliations, InProgressReconciliation, LastCompletedReconciliation, ClearTransaction, UnclearTransaction, ClearedTransactions, ClearedBalance, UnclearedTransactions, CompleteReconciliation, CancelReconciliation, UndoReconciliation
@@ -381,8 +381,9 @@ err = db.UndoReconciliation(completed.ID)
 
 ### Creating Bank Accounts with Opening Balances
 ```go
-// Create a checking account with $1,500.00 opening balance
+// Create a checking account with $1,500.00 opening balance dated Jan 15, 2024
 openingBalance := NewMoney(150000, CurrencyUSD) // Amount in cents
+openingDate := time.Date(2024, 1, 15, 12, 0, 0, 0, time.UTC)
 account, err := db.CreateBankAccount(
     "Main Checking",
     AccountTypeChecking,
@@ -391,8 +392,10 @@ account, err := db.CreateBankAccount(
     "Primary checking account",
     true,          // isActive
     openingBalance,
+    openingDate,
 )
 // This creates the account AND a deposit transaction with memo "Opening Balance"
+// dated at openingDate. openingDate must be non-zero when openingBalance > 0.
 
 // Create an account with no opening balance
 account, err := db.CreateBankAccount(
@@ -402,7 +405,8 @@ account, err := db.CreateBankAccount(
     nil,
     "",
     true,
-    Money{}, // Zero balance - no transaction created
+    Money{},     // Zero balance - no transaction created
+    time.Time{}, // Date is ignored when balance is zero
 )
 
 // Earmark accounts can also have opening balances
@@ -415,7 +419,27 @@ earmark, err := db.CreateBankAccount(
     "",
     true,
     NewMoney(50000, parent.Currency), // $500.00
+    time.Date(2024, 6, 1, 12, 0, 0, 0, time.UTC),
 )
+```
+
+### Editing the Opening Balance Date
+```go
+// Look up the opening balance transaction; returns (nil, nil) when the
+// account has no opening balance.
+tx, err := db.OpeningBalanceTransaction(accountID)
+if err != nil {
+    // handle error
+}
+if tx != nil {
+    fmt.Printf("opening balance %d cents dated %s\n", tx.Amount, tx.TransactedAt)
+}
+
+// Move the existing opening balance to a new date.
+newDate := time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC)
+if err := db.UpdateOpeningBalanceDate(accountID, newDate); err != nil {
+    // returns an error if the account has no opening balance
+}
 ```
 
 ## Next Steps (Suggested)
