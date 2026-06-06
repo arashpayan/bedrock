@@ -442,6 +442,45 @@ if err := db.UpdateOpeningBalanceDate(accountID, newDate); err != nil {
 }
 ```
 
+## Receipting & Email Delivery (Data Layer)
+
+The data needed to email PDF contribution receipts lives in bedrock; PDF
+rendering and the email transport live in `lifeblood` (packages `receiptpdf` and
+`mailer`). Schema added in `migrations/0003_receipting.sql` (schema v3).
+
+**Assembly issuer fields** (printed on receipts; all `NOT NULL DEFAULT ''`):
+`mailing_address`, `charitable_reg_number`, `contact_email`, `contact_phone`,
+`receipt_disclaimer` (seeded with the standard "No goods or services…"
+statement). Edit via `UpdateAssemblyDetails(...)`. **Note:** `Assembly()`,
+`createAssembly`, and `UpdateAssembly` use an explicit column list
+(`assemblyColumns`) and `scanAssembly` rather than `RETURNING *`, so adding
+assembly columns requires updating that one list.
+
+**`email_settings`** — single row per file (like `assembly`). Holds the
+delivery `method` (`smtp` / `gmail_oauth`), sender identity, SMTP connection
+fields, and the OAuth client + tokens. Secrets are stored **unencrypted** by
+design. Methods: `EmailSettings()` (returns sensible defaults when no row
+exists), `UpdateEmailSettings(EmailSettings)` (upserts the single row),
+`UpdateOAuthTokens(refresh, access, expiry)` (persists tokens without disturbing
+other fields; preserves an existing refresh token when passed an empty one).
+
+**`receipt_deliveries`** — append-only log of every send attempt
+(`receipt_id`, `sent_at`, `method`, `recipient_address`, `status`,
+`error_message`). A receipt is "sent" once it has a `success` row. Methods:
+`RecordReceiptDelivery(...)`, `ReceiptDeliveries(receiptID)`,
+`LastSuccessfulDelivery(receiptID)` (returns `nil, nil` when never sent).
+
+**Queries:** `UnsentReceipts(UnsentReceiptsOptions{StartDate, EndDate,
+CustomerID})` returns receipts with no successful delivery, ordered by customer
+then date (so callers can group a contributor's receipts into one email).
+`FullReceipt(id)` bundles a receipt with its customer, resolved line items, and
+computed total for rendering.
+
+**Receipt HumanID uniqueness:** `CreateReceipt`/`CreateReceiptWithItems` use
+`nextReceiptHumanID`, which guarantees a unique `human_id` even when receipts are
+created within the same millisecond (the format has only ms resolution). The
+common path costs one `COUNT`; on a collision it waits 1ms and regenerates.
+
 ## Next Steps (Suggested)
 - Expense querying and reporting methods (ExpensesByCategory, ExpensesByTransaction, etc.)
 - Transaction querying and reporting methods

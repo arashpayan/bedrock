@@ -74,12 +74,20 @@ type Base struct {
 	ModifiedAt time.Time `db:"modified_at"`
 }
 
-// Assembly represents a Spiritual Assembly organization
+// Assembly represents a Spiritual Assembly organization. The issuer fields
+// (mailing address, charitable registration number, contact details, and the
+// receipt disclaimer) appear on emailed/printed contribution receipts and are
+// edited in the Settings screen. They default to the empty string.
 type Assembly struct {
 	Base
-	DefaultCurrency Currency       `db:"default_currency"`
-	Name            string         `db:"name"`
-	Timezone        *time.Location `db:"timezone"`
+	CharitableRegNumber string         `db:"charitable_reg_number"`
+	ContactEmail        string         `db:"contact_email"`
+	ContactPhone        string         `db:"contact_phone"`
+	DefaultCurrency     Currency       `db:"default_currency"`
+	MailingAddress      string         `db:"mailing_address"`
+	Name                string         `db:"name"`
+	ReceiptDisclaimer   string         `db:"receipt_disclaimer"`
+	Timezone            *time.Location `db:"timezone"`
 }
 
 // BankAccount represents a bank account with optional parent for sub-accounts
@@ -139,6 +147,88 @@ type ReceiptItemInput struct {
 	ItemID      ID
 	Description string
 	Price       Money
+}
+
+// DeliveryStatus records whether a receipt email delivery attempt succeeded.
+type DeliveryStatus string
+
+const (
+	DeliveryStatusSuccess DeliveryStatus = "success"
+	DeliveryStatusFailure DeliveryStatus = "failure"
+)
+
+// EmailMethod selects how receipt emails are delivered.
+type EmailMethod string
+
+const (
+	EmailMethodNone       EmailMethod = ""            // not configured
+	EmailMethodSMTP       EmailMethod = "smtp"        // generic SMTP / Gmail app-password
+	EmailMethodGmailOAuth EmailMethod = "gmail_oauth" // Gmail API with the gmail.send scope
+)
+
+// SMTPSecurity selects the transport security for an SMTP connection.
+type SMTPSecurity string
+
+const (
+	SMTPSecurityNone     SMTPSecurity = "none"     // plaintext (not recommended)
+	SMTPSecuritySTARTTLS SMTPSecurity = "starttls" // upgrade on the submission port (587)
+	SMTPSecurityTLS      SMTPSecurity = "tls"      // implicit TLS (465)
+)
+
+// EmailSettings holds the per-assembly email delivery configuration. Exactly
+// one row exists per database file. Secret fields (SMTPPassword, OAuth client
+// secret and tokens) are stored unencrypted in the .bedrock file.
+type EmailSettings struct {
+	Base
+	Method            EmailMethod  `db:"method"`
+	FromName          string       `db:"from_name"`
+	FromAddress       string       `db:"from_address"`
+	ReplyTo           string       `db:"reply_to"`
+	SMTPHost          string       `db:"smtp_host"`
+	SMTPPort          int          `db:"smtp_port"`
+	SMTPUsername      string       `db:"smtp_username"`
+	SMTPPassword      string       `db:"smtp_password"`
+	SMTPSecurity      SMTPSecurity `db:"smtp_security"`
+	OAuthClientID     string       `db:"oauth_client_id"`
+	OAuthClientSecret string       `db:"oauth_client_secret"`
+	OAuthRefreshToken string       `db:"oauth_refresh_token"`
+	OAuthAccessToken  string       `db:"oauth_access_token"`
+	OAuthTokenExpiry  *time.Time   `db:"oauth_token_expiry"`
+}
+
+// FullReceipt bundles a receipt with its customer, resolved line items, and
+// computed total — everything needed to render a receipt PDF without further
+// database access.
+type FullReceipt struct {
+	Receipt  Receipt
+	Customer Party
+	Items    []FullReceiptItem
+	Total    Money
+}
+
+// FullReceiptItem pairs a receipt line item with its resolved Item record.
+type FullReceiptItem struct {
+	Item        Item
+	ReceiptItem ReceiptItem
+}
+
+// ReceiptDelivery is one row in the append-only receipt email delivery log.
+type ReceiptDelivery struct {
+	Base
+	ReceiptID        ID             `db:"receipt_id"`
+	SentAt           time.Time      `db:"sent_at"`
+	Method           string         `db:"method"`
+	RecipientAddress string         `db:"recipient_address"`
+	Status           DeliveryStatus `db:"status"`
+	ErrorMessage     string         `db:"error_message"`
+}
+
+// UnsentReceiptsOptions filters the receipts returned by UnsentReceipts. A nil
+// field imposes no constraint on that dimension.
+type UnsentReceiptsOptions struct {
+	StartDate  *time.Time // include receipts sold on or after this date
+	EndDate    *time.Time // include receipts sold on or before this date
+	CustomerID *ID        // restrict to a single contributor
 }
 
 // Expense represents a line item for a withdrawal transaction

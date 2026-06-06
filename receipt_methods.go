@@ -21,8 +21,11 @@ func (db *DB) CreateReceipt(customerID ID, soldAt time.Time, memo string) (*Rece
 		return nil, fmt.Errorf("failed to parse assembly timezone %s: %w", assemblyTimezone, err)
 	}
 
-	// Generate HumanID using current system time in assembly timezone format 20060102150405.000
-	humanID := time.Now().In(location).Format("20060102150405.000")
+	// Generate a unique HumanID using current system time in the assembly timezone.
+	humanID, err := db.nextReceiptHumanID(location)
+	if err != nil {
+		return nil, err
+	}
 
 	// Verify customer exists
 	_, err = db.Party(customerID)
@@ -77,7 +80,10 @@ func (db *DB) CreateReceiptWithItems(customerID ID, soldAt time.Time, memo strin
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse assembly timezone %s: %w", assemblyTimezone, err)
 	}
-	humanID := time.Now().In(location).Format("20060102150405.000")
+	humanID, err := db.nextReceiptHumanID(location)
+	if err != nil {
+		return nil, err
+	}
 
 	tx, err := db.conn.Beginx()
 	if err != nil {
@@ -122,6 +128,28 @@ func (db *DB) CreateReceiptWithItems(customerID ID, soldAt time.Time, memo strin
 	return &receipt, nil
 }
 
+// nextReceiptHumanID returns a human-readable receipt ID — the current time in
+// the assembly's timezone formatted as 20060102150405.000 — that is not already
+// taken. Because that format has only millisecond resolution, two receipts
+// created within the same millisecond would otherwise collide on the
+// receipts.human_id UNIQUE constraint. The common (no-collision) path costs a
+// single COUNT; on the rare collision it waits a millisecond for the clock to
+// advance and tries again.
+func (db *DB) nextReceiptHumanID(location *time.Location) (string, error) {
+	for range 1000 {
+		humanID := time.Now().In(location).Format("20060102150405.000")
+		var count int
+		if err := db.conn.Get(&count, "SELECT COUNT(*) FROM receipts WHERE human_id = ?", humanID); err != nil {
+			return "", fmt.Errorf("failed to check receipt id uniqueness: %w", err)
+		}
+		if count == 0 {
+			return humanID, nil
+		}
+		time.Sleep(time.Millisecond)
+	}
+	return "", fmt.Errorf("failed to generate a unique receipt id")
+}
+
 // Receipt retrieves a receipt by ID
 func (db *DB) Receipt(id ID) (*Receipt, error) {
 	var receipt Receipt
@@ -137,6 +165,58 @@ func (db *DB) Receipt(id ID) (*Receipt, error) {
 	}
 
 	return &receipt, nil
+}
+
+// FullReceipt loads a receipt together with its customer, resolved line items,
+// and computed total — everything required to render a receipt PDF without
+// further database access. The total's currency is taken from the receipt's
+// line items, falling back to the assembly's default currency for an itemless
+// receipt.
+func (db *DB) FullReceipt(receiptID ID) (*FullReceipt, error) {
+	receipt, err := db.Receipt(receiptID)
+	if err != nil {
+		return nil, err
+	}
+
+	customer, err := db.Party(receipt.CustomerID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load receipt customer: %w", err)
+	}
+
+	rawItems, err := db.ReceiptItems(receiptID)
+	if err != nil {
+		return nil, err
+	}
+
+	var currency Currency
+	var totalAmount int64
+	items := make([]FullReceiptItem, 0, len(rawItems))
+	for i, ri := range rawItems {
+		if i == 0 {
+			currency = ri.Price.Currency
+		}
+		totalAmount += ri.Price.Amount
+		item, err := db.Item(ri.ItemID)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load item %d for receipt: %w", ri.ItemID, err)
+		}
+		items = append(items, FullReceiptItem{Item: *item, ReceiptItem: ri})
+	}
+
+	if currency == "" {
+		assembly, err := db.Assembly()
+		if err != nil {
+			return nil, fmt.Errorf("failed to load assembly for receipt currency: %w", err)
+		}
+		currency = assembly.DefaultCurrency
+	}
+
+	return &FullReceipt{
+		Receipt:  *receipt,
+		Customer: *customer,
+		Items:    items,
+		Total:    NewMoney(totalAmount, currency),
+	}, nil
 }
 
 // ReceiptByHumanID retrieves a receipt by its human-readable ID
@@ -207,6 +287,34 @@ func (db *DB) UndepositedReceipts() ([]Receipt, error) {
 		return nil, fmt.Errorf("failed to get undeposited receipts: %w", err)
 	}
 
+	return receipts, nil
+}
+
+// UnsentReceipts returns receipts that have no successful email delivery,
+// optionally filtered by sold-at date range and/or customer. Results are
+// ordered by customer then sold date so callers can group a contributor's
+// outstanding receipts into a single email.
+func (db *DB) UnsentReceipts(opts UnsentReceiptsOptions) ([]Receipt, error) {
+	q := db.sq.Select("id", "human_id", "customer_id", "sold_at", "transaction_id", "memo", "created_at", "modified_at").
+		From("receipts").
+		Where("NOT EXISTS (SELECT 1 FROM receipt_deliveries d WHERE d.receipt_id = receipts.id AND d.status = ?)", DeliveryStatusSuccess)
+
+	if opts.StartDate != nil {
+		q = q.Where("sold_at >= ?", *opts.StartDate)
+	}
+	if opts.EndDate != nil {
+		q = q.Where("sold_at <= ?", *opts.EndDate)
+	}
+	if opts.CustomerID != nil {
+		q = q.Where("customer_id = ?", *opts.CustomerID)
+	}
+
+	query, args := q.OrderBy("customer_id ASC", "sold_at ASC").MustSql()
+
+	var receipts []Receipt
+	if err := db.conn.Select(&receipts, query, args...); err != nil {
+		return nil, fmt.Errorf("failed to get unsent receipts: %w", err)
+	}
 	return receipts, nil
 }
 
