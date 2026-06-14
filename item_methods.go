@@ -100,6 +100,15 @@ func (db *DB) UpdateItem(id ID, name string) (*Item, error) {
 
 // DeleteItem deletes an item by ID
 func (db *DB) DeleteItem(id ID) error {
+	// Check for dependencies
+	var count int
+	if err := db.conn.Get(&count, "SELECT COUNT(*) FROM receipt_items WHERE item_id = ?", id); err != nil {
+		return fmt.Errorf("failed to check item dependencies: %w", err)
+	}
+	if count > 0 {
+		return fmt.Errorf("cannot delete item: %d receipt items are using this item", count)
+	}
+
 	query, args := db.sq.Delete("items").
 		Where("id = ?", id).
 		MustSql()

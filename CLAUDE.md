@@ -224,7 +224,7 @@ defer db.Close()
 - **Expense Categorization**: Withdrawal transactions require one or more expense items with automatic total calculation and validation
 - **Ledger Views**: Complete account ledgers with running balances, hierarchical account support, and enriched transaction data
 - **Balance Calculations**: Current and historical balance calculations with subaccount aggregation
-- **Referential Integrity**: Prevents deletion of entities with dependencies (accounts with children/transactions, receipts with items, categories with expenses)
+- **Referential Integrity**: Prevents deletion of entities with dependencies (accounts with children/transactions, receipts with items, categories with expenses, items referenced by receipt items)
 - **Single Assembly Per Database**: Each `.bedrock` file contains exactly one Assembly with proper validation
 - **Workflow Support**: Undeposited receipts tracking, transaction assignment, hierarchical account queries, expense breakdowns
 - **Bank Reconciliation**: Complete reconciliation workflow with transaction clearing, balance verification, undo support, and historical tracking

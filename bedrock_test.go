@@ -336,6 +336,29 @@ func TestItemCRUD(t *testing.T) {
 		err := db.DeleteItem(99999)
 		assert.Error(t, err, "Expected error when deleting non-existent item")
 	})
+
+	// Test DeleteItem with dependencies
+	t.Run("DeleteItemWithDependencies", func(t *testing.T) {
+		_, _, depItem, party, _ := setupTestData(t, db)
+
+		// Create a receipt with a line item using this item
+		items := []ReceiptItemInput{
+			{
+				ItemID: depItem.ID,
+				Price:  NewMoney(1000, CurrencyUSD),
+			},
+		}
+		_, err := db.CreateReceiptWithItems(party.ID, time.Now(), "Test", items)
+		require.NoError(t, err, "Failed to create receipt")
+
+		// Try to delete item with dependencies
+		err = db.DeleteItem(depItem.ID)
+		assert.Error(t, err, "Expected error when deleting item with dependencies")
+
+		// Verify it's still there
+		_, err = db.Item(depItem.ID)
+		assert.NoError(t, err, "Item should still exist after blocked delete")
+	})
 }
 
 func TestCategoryCRUD(t *testing.T) {
