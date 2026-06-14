@@ -381,6 +381,93 @@ func (db *DB) UnassignReceiptFromTransaction(receiptID ID) (*Receipt, error) {
 	return &receipt, nil
 }
 
+// UpdateReceiptWithItems updates a receipt's header fields (customer, sold date,
+// memo) and replaces its entire set of line items in a single transaction. The
+// existing items are deleted and the supplied items inserted in their place, so
+// callers pass the complete desired item set rather than a diff.
+//
+// It refuses to update a receipt that has already been assigned to a deposit
+// transaction, since changing its items would desync that deposit's total; the
+// receipt must be removed from the deposit first.
+func (db *DB) UpdateReceiptWithItems(id ID, customerID ID, soldAt time.Time, memo string, items []ReceiptItemInput) (*Receipt, error) {
+	if len(items) == 0 {
+		return nil, fmt.Errorf("at least one receipt item is required")
+	}
+
+	// Validate all items have positive prices in a consistent currency.
+	currency := items[0].Price.Currency
+	for i, item := range items {
+		if item.Price.Amount <= 0 {
+			return nil, fmt.Errorf("item %d: price must be positive, got %d cents", i, item.Price.Amount)
+		}
+		if item.Price.Currency != currency {
+			return nil, fmt.Errorf("item %d: currency %s does not match %s", i, item.Price.Currency, currency)
+		}
+	}
+
+	receipt, err := db.Receipt(id)
+	if err != nil {
+		return nil, err
+	}
+	if receipt.TransactionID != nil {
+		return nil, fmt.Errorf("cannot edit a deposited receipt; remove it from its deposit first")
+	}
+
+	// Verify the customer exists before mutating anything.
+	if _, err := db.Party(customerID); err != nil {
+		return nil, fmt.Errorf("customer not found: %w", err)
+	}
+
+	tx, err := db.conn.Beginx()
+	if err != nil {
+		return nil, fmt.Errorf("failed to start transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	headerQuery, headerArgs := db.sq.Update("receipts").
+		SetMap(map[string]any{
+			"customer_id": customerID,
+			"sold_at":     soldAt.Round(0),
+			"memo":        memo,
+		}).
+		Where("id = ?", id).
+		Suffix("RETURNING *").
+		MustSql()
+
+	updated := Receipt{}
+	if err := tx.Get(&updated, headerQuery, headerArgs...); err != nil {
+		return nil, fmt.Errorf("failed to update receipt: %w", err)
+	}
+
+	deleteQuery, deleteArgs := db.sq.Delete("receipt_items").
+		Where("receipt_id = ?", id).
+		MustSql()
+	if _, err := tx.Exec(deleteQuery, deleteArgs...); err != nil {
+		return nil, fmt.Errorf("failed to clear existing receipt items: %w", err)
+	}
+
+	for i, item := range items {
+		itemQuery, itemArgs := db.sq.Insert("receipt_items").
+			SetMap(map[string]any{
+				"receipt_id":  id,
+				"item_id":     item.ItemID,
+				"description": item.Description,
+				"price":       item.Price.Amount,
+				"currency":    item.Price.Currency,
+			}).
+			MustSql()
+		if _, err := tx.Exec(itemQuery, itemArgs...); err != nil {
+			return nil, fmt.Errorf("failed to insert receipt item %d: %w", i, err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("failed to commit transaction: %w", err)
+	}
+
+	return &updated, nil
+}
+
 // DeleteReceipt deletes a receipt by ID
 func (db *DB) DeleteReceipt(id ID) error {
 	// Check if receipt has associated receipt items
@@ -409,6 +496,46 @@ func (db *DB) DeleteReceipt(id ID) error {
 
 	if rowsAffected == 0 {
 		return fmt.Errorf("receipt with id %d not found", id)
+	}
+
+	return nil
+}
+
+// DeleteReceiptWithItems deletes a receipt together with all of its line items
+// in a single transaction. It refuses to delete a receipt that has already been
+// assigned to a deposit transaction, since doing so would desync that deposit's
+// total; the receipt must be removed from the deposit first.
+func (db *DB) DeleteReceiptWithItems(id ID) error {
+	receipt, err := db.Receipt(id)
+	if err != nil {
+		return err
+	}
+	if receipt.TransactionID != nil {
+		return fmt.Errorf("cannot delete a deposited receipt; remove it from its deposit first")
+	}
+
+	tx, err := db.conn.Beginx()
+	if err != nil {
+		return fmt.Errorf("failed to start transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	itemsQuery, itemsArgs := db.sq.Delete("receipt_items").
+		Where("receipt_id = ?", id).
+		MustSql()
+	if _, err := tx.Exec(itemsQuery, itemsArgs...); err != nil {
+		return fmt.Errorf("failed to delete receipt items: %w", err)
+	}
+
+	receiptQuery, receiptArgs := db.sq.Delete("receipts").
+		Where("id = ?", id).
+		MustSql()
+	if _, err := tx.Exec(receiptQuery, receiptArgs...); err != nil {
+		return fmt.Errorf("failed to delete receipt: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit transaction: %w", err)
 	}
 
 	return nil

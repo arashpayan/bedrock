@@ -207,7 +207,8 @@ defer db.Close()
   - **Item CRUD**: CreateItem, Item, ItemByName, ListItems, UpdateItem, DeleteItem
   - **Category CRUD**: CreateCategory, Category, CategoryByName, Categories, UpdateCategory, DeleteCategory
   - **Party CRUD**: CreateParty, Party, PartyByName, PartyByEmail, PartyByBahaiID, ListParties, SearchParties, UpdateParty, DeleteParty
-  - **Receipt CRUD**: CreateReceipt (auto HumanID with current time), Receipt, ReceiptByHumanID, ReceiptsByCustomer, ReceiptsByTransaction, UndepositedReceipts, Receipts, AssignReceiptToTransaction, UnassignReceiptFromTransaction, DeleteReceipt
+  - **Receipt CRUD**: CreateReceipt (auto HumanID with current time), CreateReceiptWithItems, UpdateReceiptWithItems, Receipt, ReceiptByHumanID, ReceiptsByCustomer, ReceiptsByTransaction, UndepositedReceipts, Receipts, AssignReceiptToTransaction, UnassignReceiptFromTransaction, DeleteReceipt, DeleteReceiptWithItems
+    - **`UpdateReceiptWithItems`** edits the header (customer, sold date, memo) and replaces the entire line-item set in one transaction. **`DeleteReceiptWithItems`** removes a receipt and its items in one transaction. Both **refuse a deposited receipt** (`transaction_id IS NOT NULL`) — editing or deleting one would desync its deposit total, so it must be removed from the deposit first.
   - **ReceiptItem CRUD**: CreateReceiptItem, ReceiptItem, ReceiptItems, UpdateReceiptItem, DeleteReceiptItem
   - **BankAccount CRUD**: CreateBankAccount, BankAccount, BankAccountByName, RootBankAccounts, ChildBankAccounts, BankAccounts, ActiveBankAccounts, OpeningBalanceTransaction, UpdateBankAccount, UpdateOpeningBalanceDate, DeactivateBankAccount, DeleteBankAccount
   - **Transaction CRUD**: CreateDeposit, CreateWithdrawal (with expense categorization and currency validation)
