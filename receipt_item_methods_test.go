@@ -23,10 +23,10 @@ func TestReceiptItemCRUD(t *testing.T) {
 	require.NoError(t, err, "Failed to create party")
 
 	// Create items for receipt items
-	item1, err := db.CreateItem("Local Fund")
+	item1, err := db.CreateItem("Local Fund", true)
 	require.NoError(t, err, "Failed to create item 1")
 
-	item2, err := db.CreateItem("Humanitarian Fund")
+	item2, err := db.CreateItem("Humanitarian Fund", true)
 	require.NoError(t, err, "Failed to create item 2")
 
 	// Create a receipt

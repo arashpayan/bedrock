@@ -16,17 +16,17 @@ func TestUpdateReceiptWithItems(t *testing.T) {
 
 	other, err := db.CreateParty("Other Contributor", nil, nil, nil, nil)
 	require.NoError(t, err)
-	fund2, err := db.CreateItem("Humanitarian Fund")
+	fund2, err := db.CreateItem("Humanitarian Fund", true)
 	require.NoError(t, err)
 
 	soldAt := time.Date(2026, 1, 2, 12, 0, 0, 0, time.UTC)
-	receipt, err := db.CreateReceiptWithItems(party.ID, soldAt, "original", []ReceiptItemInput{
+	receipt, err := db.CreateReceiptWithItems(party.ID, soldAt, "original", false, []ReceiptItemInput{
 		{ItemID: item.ID, Price: NewMoney(1000, CurrencyUSD)},
 	})
 	require.NoError(t, err)
 
 	newSoldAt := time.Date(2026, 3, 4, 12, 0, 0, 0, time.UTC)
-	updated, err := db.UpdateReceiptWithItems(receipt.ID, other.ID, newSoldAt, "edited", []ReceiptItemInput{
+	updated, err := db.UpdateReceiptWithItems(receipt.ID, other.ID, newSoldAt, "edited", false, []ReceiptItemInput{
 		{ItemID: item.ID, Price: NewMoney(2500, CurrencyUSD)},
 		{ItemID: fund2.ID, Price: NewMoney(500, CurrencyUSD)},
 	})
@@ -52,25 +52,25 @@ func TestUpdateReceiptWithItems_Validation(t *testing.T) {
 	db := testDB(t)
 	_, _, item, party, _ := setupTestData(t, db)
 
-	receipt, err := db.CreateReceiptWithItems(party.ID, time.Now(), "", []ReceiptItemInput{
+	receipt, err := db.CreateReceiptWithItems(party.ID, time.Now(), "", false, []ReceiptItemInput{
 		{ItemID: item.ID, Price: NewMoney(1000, CurrencyUSD)},
 	})
 	require.NoError(t, err)
 
 	t.Run("NoItems", func(t *testing.T) {
-		_, err := db.UpdateReceiptWithItems(receipt.ID, party.ID, time.Now(), "", nil)
+		_, err := db.UpdateReceiptWithItems(receipt.ID, party.ID, time.Now(), "", false, nil)
 		require.Error(t, err)
 	})
 
 	t.Run("NonPositivePrice", func(t *testing.T) {
-		_, err := db.UpdateReceiptWithItems(receipt.ID, party.ID, time.Now(), "", []ReceiptItemInput{
+		_, err := db.UpdateReceiptWithItems(receipt.ID, party.ID, time.Now(), "", false, []ReceiptItemInput{
 			{ItemID: item.ID, Price: NewMoney(0, CurrencyUSD)},
 		})
 		require.Error(t, err)
 	})
 
 	t.Run("MixedCurrency", func(t *testing.T) {
-		_, err := db.UpdateReceiptWithItems(receipt.ID, party.ID, time.Now(), "", []ReceiptItemInput{
+		_, err := db.UpdateReceiptWithItems(receipt.ID, party.ID, time.Now(), "", false, []ReceiptItemInput{
 			{ItemID: item.ID, Price: NewMoney(1000, CurrencyUSD)},
 			{ItemID: item.ID, Price: NewMoney(1000, CurrencyCAD)},
 		})
@@ -78,7 +78,7 @@ func TestUpdateReceiptWithItems_Validation(t *testing.T) {
 	})
 
 	t.Run("MissingCustomer", func(t *testing.T) {
-		_, err := db.UpdateReceiptWithItems(receipt.ID, ID(99999), time.Now(), "", []ReceiptItemInput{
+		_, err := db.UpdateReceiptWithItems(receipt.ID, ID(99999), time.Now(), "", false, []ReceiptItemInput{
 			{ItemID: item.ID, Price: NewMoney(1000, CurrencyUSD)},
 		})
 		require.Error(t, err)
@@ -97,7 +97,7 @@ func TestUpdateReceiptWithItems_Deposited(t *testing.T) {
 	db := testDB(t)
 	_, account, item, party, _ := setupTestData(t, db)
 
-	receipt, err := db.CreateReceiptWithItems(party.ID, time.Now(), "", []ReceiptItemInput{
+	receipt, err := db.CreateReceiptWithItems(party.ID, time.Now(), "", false, []ReceiptItemInput{
 		{ItemID: item.ID, Price: NewMoney(1000, CurrencyUSD)},
 	})
 	require.NoError(t, err)
@@ -106,7 +106,7 @@ func TestUpdateReceiptWithItems_Deposited(t *testing.T) {
 		TransactionMethodCheck, "deposit", time.Now(), []ID{receipt.ID})
 	require.NoError(t, err)
 
-	_, err = db.UpdateReceiptWithItems(receipt.ID, party.ID, time.Now(), "edited", []ReceiptItemInput{
+	_, err = db.UpdateReceiptWithItems(receipt.ID, party.ID, time.Now(), "edited", false, []ReceiptItemInput{
 		{ItemID: item.ID, Price: NewMoney(2000, CurrencyUSD)},
 	})
 	require.Error(t, err)
@@ -118,7 +118,7 @@ func TestDeleteReceiptWithItems(t *testing.T) {
 	db := testDB(t)
 	_, _, item, party, _ := setupTestData(t, db)
 
-	receipt, err := db.CreateReceiptWithItems(party.ID, time.Now(), "", []ReceiptItemInput{
+	receipt, err := db.CreateReceiptWithItems(party.ID, time.Now(), "", false, []ReceiptItemInput{
 		{ItemID: item.ID, Price: NewMoney(1000, CurrencyUSD)},
 		{ItemID: item.ID, Price: NewMoney(500, CurrencyUSD)},
 	})
@@ -139,7 +139,7 @@ func TestDeleteReceiptWithItems_Deposited(t *testing.T) {
 	db := testDB(t)
 	_, account, item, party, _ := setupTestData(t, db)
 
-	receipt, err := db.CreateReceiptWithItems(party.ID, time.Now(), "", []ReceiptItemInput{
+	receipt, err := db.CreateReceiptWithItems(party.ID, time.Now(), "", false, []ReceiptItemInput{
 		{ItemID: item.ID, Price: NewMoney(1000, CurrencyUSD)},
 	})
 	require.NoError(t, err)

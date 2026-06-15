@@ -9,7 +9,7 @@ import (
 // The order must match the destinations in scanAssembly.
 const assemblyColumns = "id, name, timezone, default_currency, " +
 	"mailing_address, charitable_reg_number, contact_email, contact_phone, " +
-	"receipt_disclaimer, created_at, modified_at"
+	"receipt_disclaimer, in_kind_receipt_disclaimer, created_at, modified_at"
 
 // createAssembly creates a new Spiritual Assembly in the database (internal use only)
 func (db *DB) createAssembly(name string, timezone *time.Location, defaultCurrency Currency) (*Assembly, error) {
@@ -85,15 +85,17 @@ func (db *DB) UpdateAssembly(name string, timezone *time.Location, defaultCurren
 }
 
 // UpdateAssemblyDetails updates the issuer fields printed on contribution
-// receipts. All fields are optional and may be empty strings.
-func (db *DB) UpdateAssemblyDetails(mailingAddress, charitableRegNumber, contactEmail, contactPhone, receiptDisclaimer string) (*Assembly, error) {
+// receipts. All fields are optional and may be empty strings. inKindDisclaimer
+// is the wording printed on gift-in-kind receipts.
+func (db *DB) UpdateAssemblyDetails(mailingAddress, charitableRegNumber, contactEmail, contactPhone, receiptDisclaimer, inKindDisclaimer string) (*Assembly, error) {
 	query, args := db.sq.Update("assembly").
 		SetMap(map[string]any{
-			"mailing_address":       mailingAddress,
-			"charitable_reg_number": charitableRegNumber,
-			"contact_email":         contactEmail,
-			"contact_phone":         contactPhone,
-			"receipt_disclaimer":    receiptDisclaimer,
+			"mailing_address":            mailingAddress,
+			"charitable_reg_number":      charitableRegNumber,
+			"contact_email":              contactEmail,
+			"contact_phone":              contactPhone,
+			"receipt_disclaimer":         receiptDisclaimer,
+			"in_kind_receipt_disclaimer": inKindDisclaimer,
 		}).
 		Suffix("RETURNING " + assemblyColumns).
 		MustSql()
@@ -120,6 +122,7 @@ func scanAssembly(row interface{ Scan(...any) error }) (*Assembly, error) {
 		&assembly.ContactEmail,
 		&assembly.ContactPhone,
 		&assembly.ReceiptDisclaimer,
+		&assembly.InKindDisclaimer,
 		&assembly.CreatedAt,
 		&assembly.ModifiedAt,
 	); err != nil {

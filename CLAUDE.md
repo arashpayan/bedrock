@@ -108,9 +108,16 @@ func SomeOtherFunction() {
 - `BankAccount` - supports hierarchical structure with ParentID for sub-accounts and currency per account
 
 ### Contribution Management
-- `Item` - represents contribution categories/funds (e.g., "Local Fund", "Humanitarian Fund")
-- `Receipt` - issued for contributions with HumanID (auto-generated), CustomerID (Party FK), SoldAt timestamp, and TransactionID foreign key
-- `ReceiptItem` - line items on receipts linking to Items with Price (Money type)
+- `Item` - represents contribution categories/funds (e.g., "Local Fund", "Humanitarian Fund"). `CountsTowardGoal` marks whether the fund's contributions count toward the annual fundraising goal (earmarked funds set it false).
+- `Receipt` - issued for contributions with HumanID (auto-generated), CustomerID (Party FK), SoldAt timestamp, and TransactionID foreign key. `IsInKind` marks a non-cash (in-kind) contribution.
+- `ReceiptItem` - line items on receipts linking to Items with Price (Money type), plus an optional `CategoryID` (expense category) used only by in-kind contributions
+
+### In-Kind (Non-Cash) Contributions
+An in-kind contribution records value a contributor donated directly (e.g. paying a vendor for an event's food) without the money passing through the Assembly. Schema added in `migrations/0005_in_kind_contributions.sql` (schema v5): `receipts.is_in_kind`, `receipt_items.category_id`, and an editable `assembly.in_kind_receipt_disclaimer`.
+- **It's a receipt, not a fake deposit.** An in-kind receipt counts toward the fundraising goal (`FundraisingProgress` already sums by `SoldAt`, ignoring deposit status) but **never gets a `transaction_id`** and is kept out of every cash workflow.
+- **Excluded from cash workflows:** `UndepositedReceipts` filters out in-kind receipts; `AssignReceiptToTransaction` rejects them; `CreateDepositWithReceipts` excludes them (count mismatch → error). Reconciliation only ever sees real transactions, so it's unaffected.
+- **Optional expense category:** each in-kind line may carry a `CategoryID` (what the donated value was spent on). `validateReceiptItemInputs` rejects a category on a non-in-kind contribution. `FullReceipt` resolves it into `FullReceiptItem.Category`.
+- `CreateReceiptWithItems`/`UpdateReceiptWithItems` take an `isInKind bool`; the `Price` on an in-kind line is its fair market value.
 
 ### Expense Management
 - `Category` - represents expense categories for withdrawal transactions (e.g., "Office Supplies", "Food", "Travel")
@@ -120,6 +127,14 @@ func SomeOtherFunction() {
 ### Ledger and Reporting
 - `LedgerEntry` - represents a single row in a ledger view with transaction data and running balance
 - `LedgerOptions` - provides filtering and pagination options for ledger queries
+
+### Fundraising Goal Tracking
+- `FundraisingGoal` - the editable target for one fiscal year (`FiscalYear` int + `Amount` Money). One goal per year, keyed by the starting calendar year.
+- `FundraisingProgress` - computed summary for a fiscal year: `Start`/`End` of the year, `Goal` (nil if unset), `Raised`, plus `Percent()` and `Remaining()` helpers.
+- The Assembly **fiscal year runs May 1 – April 30**, identified by its starting calendar year (FY 2026 = May 1, 2026 – Apr 30, 2027). This is a fixed constant (`fiscalYearStartMonth`/`Day`).
+- Package helpers `FiscalYearForDate(t, loc)` and `FiscalYearRange(fy, loc)` do the date math (timezone-aware); `db.CurrentFiscalYear()` resolves "now" in the Assembly timezone.
+- Only contributions to **non-earmarked** funds (`Item.CountsTowardGoal`), with a `Receipt.SoldAt` inside the fiscal year and in the Assembly's default currency, count toward `Raised`. The deposit date and deposit status are irrelevant — a contribution counts when *received*, which also lets undeposited (and future in-kind) contributions count.
+- **Methods** (`fundraising_methods.go`): `SetFundraisingGoal` (upsert, validates positive + default currency), `FundraisingGoal` (nil,nil when unset), `FundraisingGoals`, `DeleteFundraisingGoal`, `FundraisingProgress`. Schema added in `migrations/0004_fundraising_goals.sql` (schema v4): `items.counts_toward_goal` + `fundraising_goals` table.
 
 ### Reconciliation
 - `ReconciliationStatus` - type-safe constants (in-progress, completed). A reconciliation is either in-flight or done; cancel and undo delete the record entirely.

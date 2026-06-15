@@ -55,20 +55,9 @@ func (db *DB) CreateReceipt(customerID ID, soldAt time.Time, memo string) (*Rece
 // in a single database transaction. If any item fails to insert, the receipt
 // is rolled back and no state is left behind. memo is the treasurer's
 // free-form note; pass an empty string when no note is wanted.
-func (db *DB) CreateReceiptWithItems(customerID ID, soldAt time.Time, memo string, items []ReceiptItemInput) (*Receipt, error) {
-	if len(items) == 0 {
-		return nil, fmt.Errorf("at least one receipt item is required")
-	}
-
-	// Validate all items have positive prices in a consistent currency
-	currency := items[0].Price.Currency
-	for i, item := range items {
-		if item.Price.Amount <= 0 {
-			return nil, fmt.Errorf("item %d: price must be positive, got %d cents", i, item.Price.Amount)
-		}
-		if item.Price.Currency != currency {
-			return nil, fmt.Errorf("item %d: currency %s does not match %s", i, item.Price.Currency, currency)
-		}
+func (db *DB) CreateReceiptWithItems(customerID ID, soldAt time.Time, memo string, isInKind bool, items []ReceiptItemInput) (*Receipt, error) {
+	if err := validateReceiptItemInputs(items, isInKind); err != nil {
+		return nil, err
 	}
 
 	// Get assembly timezone to generate HumanID
@@ -97,6 +86,7 @@ func (db *DB) CreateReceiptWithItems(customerID ID, soldAt time.Time, memo strin
 			"customer_id": customerID,
 			"sold_at":     soldAt.Round(0),
 			"memo":        memo,
+			"is_in_kind":  isInKind,
 		}).
 		Suffix("RETURNING *").
 		MustSql()
@@ -111,6 +101,7 @@ func (db *DB) CreateReceiptWithItems(customerID ID, soldAt time.Time, memo strin
 			SetMap(map[string]any{
 				"receipt_id":  receipt.ID,
 				"item_id":     item.ItemID,
+				"category_id": item.CategoryID,
 				"description": item.Description,
 				"price":       item.Price.Amount,
 				"currency":    item.Price.Currency,
@@ -154,7 +145,7 @@ func (db *DB) nextReceiptHumanID(location *time.Location) (string, error) {
 func (db *DB) Receipt(id ID) (*Receipt, error) {
 	var receipt Receipt
 
-	query, args := db.sq.Select("id", "human_id", "customer_id", "sold_at", "transaction_id", "memo", "created_at", "modified_at").
+	query, args := db.sq.Select("id", "human_id", "customer_id", "sold_at", "transaction_id", "memo", "is_in_kind", "created_at", "modified_at").
 		From("receipts").
 		Where("id = ?", id).
 		MustSql()
@@ -200,7 +191,14 @@ func (db *DB) FullReceipt(receiptID ID) (*FullReceipt, error) {
 		if err != nil {
 			return nil, fmt.Errorf("failed to load item %d for receipt: %w", ri.ItemID, err)
 		}
-		items = append(items, FullReceiptItem{Item: *item, ReceiptItem: ri})
+		var category *Category
+		if ri.CategoryID != nil {
+			category, err = db.Category(*ri.CategoryID)
+			if err != nil {
+				return nil, fmt.Errorf("failed to load category %d for receipt: %w", *ri.CategoryID, err)
+			}
+		}
+		items = append(items, FullReceiptItem{Item: *item, Category: category, ReceiptItem: ri})
 	}
 
 	if currency == "" {
@@ -223,7 +221,7 @@ func (db *DB) FullReceipt(receiptID ID) (*FullReceipt, error) {
 func (db *DB) ReceiptByHumanID(humanID string) (*Receipt, error) {
 	var receipt Receipt
 
-	query, args := db.sq.Select("id", "human_id", "customer_id", "sold_at", "transaction_id", "memo", "created_at", "modified_at").
+	query, args := db.sq.Select("id", "human_id", "customer_id", "sold_at", "transaction_id", "memo", "is_in_kind", "created_at", "modified_at").
 		From("receipts").
 		Where("human_id = ?", humanID).
 		MustSql()
@@ -240,7 +238,7 @@ func (db *DB) ReceiptByHumanID(humanID string) (*Receipt, error) {
 func (db *DB) ReceiptsByCustomer(customerID ID) ([]Receipt, error) {
 	var receipts []Receipt
 
-	query, args := db.sq.Select("id", "human_id", "customer_id", "sold_at", "transaction_id", "memo", "created_at", "modified_at").
+	query, args := db.sq.Select("id", "human_id", "customer_id", "sold_at", "transaction_id", "memo", "is_in_kind", "created_at", "modified_at").
 		From("receipts").
 		Where("customer_id = ?", customerID).
 		OrderBy("sold_at DESC").
@@ -258,7 +256,7 @@ func (db *DB) ReceiptsByCustomer(customerID ID) ([]Receipt, error) {
 func (db *DB) ReceiptsByTransaction(transactionID ID) ([]Receipt, error) {
 	var receipts []Receipt
 
-	query, args := db.sq.Select("id", "human_id", "customer_id", "sold_at", "transaction_id", "memo", "created_at", "modified_at").
+	query, args := db.sq.Select("id", "human_id", "customer_id", "sold_at", "transaction_id", "memo", "is_in_kind", "created_at", "modified_at").
 		From("receipts").
 		Where("transaction_id = ?", transactionID).
 		OrderBy("sold_at DESC").
@@ -276,9 +274,10 @@ func (db *DB) ReceiptsByTransaction(transactionID ID) ([]Receipt, error) {
 func (db *DB) UndepositedReceipts() ([]Receipt, error) {
 	var receipts []Receipt
 
-	query, args := db.sq.Select("id", "human_id", "customer_id", "sold_at", "transaction_id", "memo", "created_at", "modified_at").
+	query, args := db.sq.Select("id", "human_id", "customer_id", "sold_at", "transaction_id", "memo", "is_in_kind", "created_at", "modified_at").
 		From("receipts").
 		Where("transaction_id IS NULL").
+		Where("is_in_kind = ?", false).
 		OrderBy("sold_at DESC").
 		MustSql()
 
@@ -295,7 +294,7 @@ func (db *DB) UndepositedReceipts() ([]Receipt, error) {
 // ordered by customer then sold date so callers can group a contributor's
 // outstanding receipts into a single email.
 func (db *DB) UnsentReceipts(opts UnsentReceiptsOptions) ([]Receipt, error) {
-	q := db.sq.Select("id", "human_id", "customer_id", "sold_at", "transaction_id", "memo", "created_at", "modified_at").
+	q := db.sq.Select("id", "human_id", "customer_id", "sold_at", "transaction_id", "memo", "is_in_kind", "created_at", "modified_at").
 		From("receipts").
 		Where("NOT EXISTS (SELECT 1 FROM receipt_deliveries d WHERE d.receipt_id = receipts.id AND d.status = ?)", DeliveryStatusSuccess)
 
@@ -322,7 +321,7 @@ func (db *DB) UnsentReceipts(opts UnsentReceiptsOptions) ([]Receipt, error) {
 func (db *DB) Receipts() ([]Receipt, error) {
 	var receipts []Receipt
 
-	query, args := db.sq.Select("id", "human_id", "customer_id", "sold_at", "transaction_id", "memo", "created_at", "modified_at").
+	query, args := db.sq.Select("id", "human_id", "customer_id", "sold_at", "transaction_id", "memo", "is_in_kind", "created_at", "modified_at").
 		From("receipts").
 		OrderBy("sold_at DESC").
 		MustSql()
@@ -335,8 +334,18 @@ func (db *DB) Receipts() ([]Receipt, error) {
 	return receipts, nil
 }
 
-// AssignReceiptToTransaction assigns a receipt to a deposit transaction
+// AssignReceiptToTransaction assigns a receipt to a deposit transaction. In-kind
+// contributions never produce a deposit, so attempting to assign one is an error.
 func (db *DB) AssignReceiptToTransaction(receiptID, transactionID ID) (*Receipt, error) {
+	// In-kind contributions are non-cash and must stay out of bank deposits.
+	var isInKind bool
+	if err := db.conn.Get(&isInKind, "SELECT is_in_kind FROM receipts WHERE id = ?", receiptID); err != nil {
+		return nil, fmt.Errorf("receipt not found: %w", err)
+	}
+	if isInKind {
+		return nil, fmt.Errorf("receipt %d is an in-kind contribution and cannot be deposited", receiptID)
+	}
+
 	// Verify transaction exists and is a deposit (positive amount)
 	var amount int64
 	err := db.conn.Get(&amount, "SELECT amount FROM transactions WHERE id = ?", transactionID)
@@ -389,20 +398,9 @@ func (db *DB) UnassignReceiptFromTransaction(receiptID ID) (*Receipt, error) {
 // It refuses to update a receipt that has already been assigned to a deposit
 // transaction, since changing its items would desync that deposit's total; the
 // receipt must be removed from the deposit first.
-func (db *DB) UpdateReceiptWithItems(id ID, customerID ID, soldAt time.Time, memo string, items []ReceiptItemInput) (*Receipt, error) {
-	if len(items) == 0 {
-		return nil, fmt.Errorf("at least one receipt item is required")
-	}
-
-	// Validate all items have positive prices in a consistent currency.
-	currency := items[0].Price.Currency
-	for i, item := range items {
-		if item.Price.Amount <= 0 {
-			return nil, fmt.Errorf("item %d: price must be positive, got %d cents", i, item.Price.Amount)
-		}
-		if item.Price.Currency != currency {
-			return nil, fmt.Errorf("item %d: currency %s does not match %s", i, item.Price.Currency, currency)
-		}
+func (db *DB) UpdateReceiptWithItems(id ID, customerID ID, soldAt time.Time, memo string, isInKind bool, items []ReceiptItemInput) (*Receipt, error) {
+	if err := validateReceiptItemInputs(items, isInKind); err != nil {
+		return nil, err
 	}
 
 	receipt, err := db.Receipt(id)
@@ -429,6 +427,7 @@ func (db *DB) UpdateReceiptWithItems(id ID, customerID ID, soldAt time.Time, mem
 			"customer_id": customerID,
 			"sold_at":     soldAt.Round(0),
 			"memo":        memo,
+			"is_in_kind":  isInKind,
 		}).
 		Where("id = ?", id).
 		Suffix("RETURNING *").
@@ -451,6 +450,7 @@ func (db *DB) UpdateReceiptWithItems(id ID, customerID ID, soldAt time.Time, mem
 			SetMap(map[string]any{
 				"receipt_id":  id,
 				"item_id":     item.ItemID,
+				"category_id": item.CategoryID,
 				"description": item.Description,
 				"price":       item.Price.Amount,
 				"currency":    item.Price.Currency,
@@ -538,5 +538,28 @@ func (db *DB) DeleteReceiptWithItems(id ID) error {
 		return fmt.Errorf("failed to commit transaction: %w", err)
 	}
 
+	return nil
+}
+
+// validateReceiptItemInputs checks that a receipt's line items are well formed:
+// at least one item, positive prices, a single consistent currency, and expense
+// categories only on in-kind contributions (a category on a cash contribution
+// is a programming error, since categories describe donated value).
+func validateReceiptItemInputs(items []ReceiptItemInput, isInKind bool) error {
+	if len(items) == 0 {
+		return fmt.Errorf("at least one receipt item is required")
+	}
+	currency := items[0].Price.Currency
+	for i, item := range items {
+		if item.Price.Amount <= 0 {
+			return fmt.Errorf("item %d: price must be positive, got %d cents", i, item.Price.Amount)
+		}
+		if item.Price.Currency != currency {
+			return fmt.Errorf("item %d: currency %s does not match %s", i, item.Price.Currency, currency)
+		}
+		if !isInKind && item.CategoryID != nil {
+			return fmt.Errorf("item %d: only in-kind contributions may have an expense category", i)
+		}
+	}
 	return nil
 }

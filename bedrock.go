@@ -84,6 +84,7 @@ type Assembly struct {
 	ContactEmail        string         `db:"contact_email"`
 	ContactPhone        string         `db:"contact_phone"`
 	DefaultCurrency     Currency       `db:"default_currency"`
+	InKindDisclaimer    string         `db:"in_kind_receipt_disclaimer"`
 	MailingAddress      string         `db:"mailing_address"`
 	Name                string         `db:"name"`
 	ReceiptDisclaimer   string         `db:"receipt_disclaimer"`
@@ -110,10 +111,14 @@ type BankAccountDelta struct {
 	IsActive    *bool
 }
 
-// Item represents a fund or category that can receive contributions
+// Item represents a fund or category that can receive contributions.
+// CountsTowardGoal reports whether contributions to this fund count toward the
+// Assembly's annual fundraising goal; earmarked funds (e.g. National Fund,
+// Huqúqu'lláh) set it to false.
 type Item struct {
 	Base
-	Name string `db:"name"`
+	Name             string `db:"name"`
+	CountsTowardGoal bool   `db:"counts_toward_goal"`
 }
 
 // Category represents an expense category for withdrawal transactions
@@ -130,6 +135,7 @@ type Receipt struct {
 	SoldAt        time.Time `db:"sold_at"`        // when contribution was received
 	TransactionID *ID       `db:"transaction_id"` // foreign key to deposit transaction (nil if not yet deposited)
 	Memo          string    `db:"memo"`           // treasurer's free-form note; empty string when unset
+	IsInKind      bool      `db:"is_in_kind"`     // true for non-cash (in-kind) contributions, which never get a deposit
 	Total         Money     `db:"-"`              // computed from receipt items, not stored directly
 }
 
@@ -137,14 +143,18 @@ type Receipt struct {
 type ReceiptItem struct {
 	Base
 	ReceiptID   ID     `db:"receipt_id"`  // foreign key to receipt
-	ItemID      ID     `db:"item_id"`     // foreign key to item
+	ItemID      ID     `db:"item_id"`     // foreign key to item (fund)
+	CategoryID  *ID    `db:"category_id"` // optional expense category (in-kind only); nil for cash
 	Description string `db:"description"` // description of the contribution
-	Price       Money  `db:"price"`       // amount contributed
+	Price       Money  `db:"price"`       // amount contributed (fair market value for in-kind)
 }
 
-// ReceiptItemInput represents a line item when creating a receipt with CreateReceiptWithItems.
+// ReceiptItemInput represents a line item when creating a receipt with
+// CreateReceiptWithItems. CategoryID is optional and only meaningful for
+// in-kind contributions (it records what the donated value was spent on).
 type ReceiptItemInput struct {
 	ItemID      ID
+	CategoryID  *ID
 	Description string
 	Price       Money
 }
@@ -206,9 +216,11 @@ type FullReceipt struct {
 	Total    Money
 }
 
-// FullReceiptItem pairs a receipt line item with its resolved Item record.
+// FullReceiptItem pairs a receipt line item with its resolved Item (fund) and,
+// for in-kind lines that carry one, the resolved expense Category.
 type FullReceiptItem struct {
 	Item        Item
+	Category    *Category // resolved expense category, or nil
 	ReceiptItem ReceiptItem
 }
 

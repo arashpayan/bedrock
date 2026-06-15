@@ -4,15 +4,18 @@ import (
 	"fmt"
 )
 
-// CreateItem creates a new item (contribution category)
-func (db *DB) CreateItem(name string) (*Item, error) {
+// CreateItem creates a new item (contribution fund). countsTowardGoal reports
+// whether contributions to this fund count toward the Assembly's annual
+// fundraising goal; pass false for earmarked funds.
+func (db *DB) CreateItem(name string, countsTowardGoal bool) (*Item, error) {
 	if name == "" {
 		return nil, fmt.Errorf("item name cannot be empty")
 	}
 
 	query, args := db.sq.Insert("items").
 		SetMap(map[string]any{
-			"name": name,
+			"name":               name,
+			"counts_toward_goal": countsTowardGoal,
 		}).
 		Suffix("RETURNING *").
 		MustSql()
@@ -29,7 +32,7 @@ func (db *DB) CreateItem(name string) (*Item, error) {
 func (db *DB) Item(id ID) (*Item, error) {
 	var item Item
 
-	query, args := db.sq.Select("id", "name", "created_at", "modified_at").
+	query, args := db.sq.Select("id", "name", "counts_toward_goal", "created_at", "modified_at").
 		From("items").
 		Where("id = ?", id).
 		MustSql()
@@ -46,7 +49,7 @@ func (db *DB) Item(id ID) (*Item, error) {
 func (db *DB) ItemByName(name string) (*Item, error) {
 	var item Item
 
-	query, args := db.sq.Select("id", "name", "created_at", "modified_at").
+	query, args := db.sq.Select("id", "name", "counts_toward_goal", "created_at", "modified_at").
 		From("items").
 		Where("name = ?", name).
 		MustSql()
@@ -63,7 +66,7 @@ func (db *DB) ItemByName(name string) (*Item, error) {
 func (db *DB) ListItems() ([]Item, error) {
 	var items []Item
 
-	query, args := db.sq.Select("id", "name", "created_at", "modified_at").
+	query, args := db.sq.Select("id", "name", "counts_toward_goal", "created_at", "modified_at").
 		From("items").
 		OrderBy("name ASC").
 		MustSql()
@@ -76,15 +79,17 @@ func (db *DB) ListItems() ([]Item, error) {
 	return items, nil
 }
 
-// UpdateItem updates an item's name
-func (db *DB) UpdateItem(id ID, name string) (*Item, error) {
+// UpdateItem updates an item's name and whether it counts toward the
+// fundraising goal.
+func (db *DB) UpdateItem(id ID, name string, countsTowardGoal bool) (*Item, error) {
 	if name == "" {
 		return nil, fmt.Errorf("item name cannot be empty")
 	}
 
 	query, args := db.sq.Update("items").
 		SetMap(map[string]any{
-			"name": name,
+			"name":               name,
+			"counts_toward_goal": countsTowardGoal,
 		}).
 		Where("id = ?", id).
 		Suffix("RETURNING *").

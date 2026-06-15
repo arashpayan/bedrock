@@ -41,16 +41,16 @@ func TestMigrate_V2ToV3Receipting(t *testing.T) {
 	// Assembly issuer columns exist and are writable.
 	_, err = db.createAssembly("Migrated Assembly", time.UTC, CurrencyUSD)
 	require.NoError(t, err)
-	updated, err := db.UpdateAssemblyDetails("1 Main St", "REG-1", "t@lsa.org", "555-0100", "Custom statement")
+	updated, err := db.UpdateAssemblyDetails("1 Main St", "REG-1", "t@lsa.org", "555-0100", "Custom statement", "In-kind statement")
 	require.NoError(t, err)
 	assert.Equal(t, "1 Main St", updated.MailingAddress)
 
 	// New tables exist and accept writes.
 	party, err := db.CreateParty("Contributor", nil, nil, nil, nil)
 	require.NoError(t, err)
-	item, err := db.CreateItem("Local Fund")
+	item, err := db.CreateItem("Local Fund", true)
 	require.NoError(t, err)
-	receipt, err := db.CreateReceiptWithItems(party.ID, time.Now(), "", []ReceiptItemInput{
+	receipt, err := db.CreateReceiptWithItems(party.ID, time.Now(), "", false, []ReceiptItemInput{
 		{ItemID: item.ID, Price: NewMoney(1000, CurrencyUSD)},
 	})
 	require.NoError(t, err)
@@ -73,7 +73,7 @@ func TestAssemblyIssuerDetails(t *testing.T) {
 	assert.Empty(t, assembly.CharitableRegNumber)
 	assert.Equal(t, "No goods or services were provided in exchange for this contribution.", assembly.ReceiptDisclaimer)
 
-	updated, err := db.UpdateAssemblyDetails("123 Main St\nSpringfield", "CRA-12345", "treasurer@lsa.org", "555-1234", "Thank you for your gift.")
+	updated, err := db.UpdateAssemblyDetails("123 Main St\nSpringfield", "CRA-12345", "treasurer@lsa.org", "555-1234", "Thank you for your gift.", "Gift in kind acknowledgement.")
 	require.NoError(t, err)
 	assert.Equal(t, "123 Main St\nSpringfield", updated.MailingAddress)
 	assert.Equal(t, "CRA-12345", updated.CharitableRegNumber)
@@ -173,7 +173,7 @@ func TestReceiptDeliveries(t *testing.T) {
 	db := testDB(t)
 	_, _, item, party, _ := setupTestData(t, db)
 
-	receipt, err := db.CreateReceiptWithItems(party.ID, time.Now(), "", []ReceiptItemInput{
+	receipt, err := db.CreateReceiptWithItems(party.ID, time.Now(), "", false, []ReceiptItemInput{
 		{ItemID: item.ID, Price: NewMoney(1000, CurrencyUSD)},
 	})
 	require.NoError(t, err)
@@ -222,7 +222,7 @@ func TestUnsentReceipts(t *testing.T) {
 	require.NoError(t, err)
 
 	mkReceipt := func(customerID ID, soldAt time.Time) *Receipt {
-		r, err := db.CreateReceiptWithItems(customerID, soldAt, "", []ReceiptItemInput{
+		r, err := db.CreateReceiptWithItems(customerID, soldAt, "", false, []ReceiptItemInput{
 			{ItemID: item.ID, Price: NewMoney(1000, CurrencyUSD)},
 		})
 		require.NoError(t, err)
@@ -274,10 +274,10 @@ func TestFullReceipt(t *testing.T) {
 	db := testDB(t)
 	_, _, item, party, _ := setupTestData(t, db)
 
-	item2, err := db.CreateItem("Humanitarian Fund")
+	item2, err := db.CreateItem("Humanitarian Fund", true)
 	require.NoError(t, err)
 
-	receipt, err := db.CreateReceiptWithItems(party.ID, time.Now(), "thanks", []ReceiptItemInput{
+	receipt, err := db.CreateReceiptWithItems(party.ID, time.Now(), "thanks", false, []ReceiptItemInput{
 		{ItemID: item.ID, Description: "January", Price: NewMoney(1000, CurrencyUSD)},
 		{ItemID: item2.ID, Description: "February", Price: NewMoney(2500, CurrencyUSD)},
 	})

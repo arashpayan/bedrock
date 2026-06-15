@@ -31,7 +31,7 @@ func (db *DB) CreateReceiptItem(receiptID ID, itemID ID, description string, pri
 			"price":       price.Amount,
 			"currency":    price.Currency,
 		}).
-		Suffix("RETURNING id, receipt_id, item_id, description, price, currency, created_at, modified_at").
+		Suffix("RETURNING id, receipt_id, item_id, category_id, description, price, currency, created_at, modified_at").
 		MustSql()
 
 	var ri ReceiptItem
@@ -41,6 +41,7 @@ func (db *DB) CreateReceiptItem(receiptID ID, itemID ID, description string, pri
 		&ri.ID,
 		&ri.ReceiptID,
 		&ri.ItemID,
+		&ri.CategoryID,
 		&ri.Description,
 		&priceAmount,
 		&currency,
@@ -80,7 +81,7 @@ func (db *DB) DeleteReceiptItem(id ID) error {
 
 // ReceiptItem retrieves a receipt item by ID
 func (db *DB) ReceiptItem(id ID) (*ReceiptItem, error) {
-	query, args := db.sq.Select("id", "receipt_id", "item_id", "description", "price", "currency", "created_at", "modified_at").
+	query, args := db.sq.Select("id", "receipt_id", "item_id", "category_id", "description", "price", "currency", "created_at", "modified_at").
 		From("receipt_items").
 		Where("id = ?", id).
 		MustSql()
@@ -92,6 +93,7 @@ func (db *DB) ReceiptItem(id ID) (*ReceiptItem, error) {
 		&ri.ID,
 		&ri.ReceiptID,
 		&ri.ItemID,
+		&ri.CategoryID,
 		&ri.Description,
 		&priceAmount,
 		&currency,
@@ -108,7 +110,7 @@ func (db *DB) ReceiptItem(id ID) (*ReceiptItem, error) {
 
 // ReceiptItems retrieves all receipt items for a receipt
 func (db *DB) ReceiptItems(receiptID ID) ([]ReceiptItem, error) {
-	query, args := db.sq.Select("id", "receipt_id", "item_id", "description", "price", "currency", "created_at", "modified_at").
+	query, args := db.sq.Select("id", "receipt_id", "item_id", "category_id", "description", "price", "currency", "created_at", "modified_at").
 		From("receipt_items").
 		Where("receipt_id = ?", receiptID).
 		OrderBy("id ASC").
@@ -129,6 +131,7 @@ func (db *DB) ReceiptItems(receiptID ID) ([]ReceiptItem, error) {
 			&ri.ID,
 			&ri.ReceiptID,
 			&ri.ItemID,
+			&ri.CategoryID,
 			&ri.Description,
 			&priceAmount,
 			&currency,
@@ -162,7 +165,7 @@ func (db *DB) UpdateReceiptItem(id ID, description string, price Money) (*Receip
 			"currency":    price.Currency,
 		}).
 		Where("id = ?", id).
-		Suffix("RETURNING id, receipt_id, item_id, description, price, currency, created_at, modified_at").
+		Suffix("RETURNING id, receipt_id, item_id, category_id, description, price, currency, created_at, modified_at").
 		MustSql()
 
 	var ri ReceiptItem
@@ -172,6 +175,7 @@ func (db *DB) UpdateReceiptItem(id ID, description string, price Money) (*Receip
 		&ri.ID,
 		&ri.ReceiptID,
 		&ri.ItemID,
+		&ri.CategoryID,
 		&ri.Description,
 		&priceAmount,
 		&currency,

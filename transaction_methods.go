@@ -72,7 +72,10 @@ func (db *DB) CreateDepositWithReceipts(accountID ID, amount Money, method Trans
 
 	// Ensure every requested receipt exists and is undeposited. Any receipt
 	// already assigned to a transaction is rejected.
-	existsQuery, existsArgs, err := sqlx.In("SELECT id FROM receipts WHERE id IN (?) AND transaction_id IS NULL", receiptIDs)
+	// In-kind contributions (is_in_kind = 1) are non-cash and can never be part
+	// of a deposit, so they are excluded here; passing one yields a count
+	// mismatch below and the whole deposit is rejected.
+	existsQuery, existsArgs, err := sqlx.In("SELECT id FROM receipts WHERE id IN (?) AND transaction_id IS NULL AND is_in_kind = 0", receiptIDs)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build receipt lookup: %w", err)
 	}
@@ -81,7 +84,7 @@ func (db *DB) CreateDepositWithReceipts(accountID ID, amount Money, method Trans
 		return nil, fmt.Errorf("failed to check receipts: %w", err)
 	}
 	if len(availableIDs) != len(receiptIDs) {
-		return nil, fmt.Errorf("expected %d undeposited receipts, found %d", len(receiptIDs), len(availableIDs))
+		return nil, fmt.Errorf("expected %d depositable (cash, undeposited) receipts, found %d", len(receiptIDs), len(availableIDs))
 	}
 
 	// Insert the deposit transaction

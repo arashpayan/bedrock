@@ -42,7 +42,7 @@ func setupTestData(t *testing.T, db *DB) (assembly *Assembly, account *BankAccou
 	require.NoError(t, err, "Failed to create test bank account")
 
 	// Create test item
-	item, err = db.CreateItem("Local Fund")
+	item, err = db.CreateItem("Local Fund", true)
 	require.NoError(t, err, "Failed to create test item")
 
 	// Create test party
@@ -257,7 +257,7 @@ func TestItemCRUD(t *testing.T) {
 
 	// Test CreateItem
 	t.Run("CreateItem", func(t *testing.T) {
-		item, err := db.CreateItem("Test Fund")
+		item, err := db.CreateItem("Test Fund", true)
 		require.NoError(t, err, "CreateItem should succeed")
 
 		assert.Equal(t, "Test Fund", item.Name)
@@ -268,12 +268,12 @@ func TestItemCRUD(t *testing.T) {
 
 	// Test CreateItem with empty name
 	t.Run("CreateItemEmptyName", func(t *testing.T) {
-		_, err := db.CreateItem("")
+		_, err := db.CreateItem("", true)
 		assert.Error(t, err, "Expected error for empty name")
 	})
 
 	// Create an item for other tests
-	item, err := db.CreateItem("Humanitarian Fund")
+	item, err := db.CreateItem("Humanitarian Fund", true)
 	require.NoError(t, err, "Failed to create test item")
 
 	// Test Item retrieval
@@ -308,7 +308,7 @@ func TestItemCRUD(t *testing.T) {
 
 	// Test UpdateItem
 	t.Run("UpdateItem", func(t *testing.T) {
-		updated, err := db.UpdateItem(item.ID, "Updated Fund Name")
+		updated, err := db.UpdateItem(item.ID, "Updated Fund Name", true)
 		require.NoError(t, err, "UpdateItem should succeed")
 
 		assert.Equal(t, "Updated Fund Name", updated.Name)
@@ -317,7 +317,7 @@ func TestItemCRUD(t *testing.T) {
 
 	// Test UpdateItem with empty name
 	t.Run("UpdateItemEmptyName", func(t *testing.T) {
-		_, err := db.UpdateItem(item.ID, "")
+		_, err := db.UpdateItem(item.ID, "", true)
 		assert.Error(t, err, "Expected error for empty name")
 	})
 
@@ -348,7 +348,7 @@ func TestItemCRUD(t *testing.T) {
 				Price:  NewMoney(1000, CurrencyUSD),
 			},
 		}
-		_, err := db.CreateReceiptWithItems(party.ID, time.Now(), "Test", items)
+		_, err := db.CreateReceiptWithItems(party.ID, time.Now(), "Test", false, items)
 		require.NoError(t, err, "Failed to create receipt")
 
 		// Try to delete item with dependencies
@@ -1027,7 +1027,7 @@ func TestCreateReceiptWithItems(t *testing.T) {
 			{ItemID: item.ID, Description: "First", Price: NewMoney(1000, CurrencyUSD)},
 			{ItemID: item.ID, Description: "Second", Price: NewMoney(2500, CurrencyUSD)},
 		}
-		receipt, err := db.CreateReceiptWithItems(party.ID, soldAt, "", items)
+		receipt, err := db.CreateReceiptWithItems(party.ID, soldAt, "", false, items)
 		require.NoError(t, err)
 		assert.NotZero(t, receipt.ID)
 		assert.NotEmpty(t, receipt.HumanID)
@@ -1054,7 +1054,7 @@ func TestCreateReceiptWithItems(t *testing.T) {
 			{ItemID: item.ID, Description: "orphan sentinel", Price: NewMoney(1000, CurrencyUSD)},
 			{ItemID: 99999, Description: "bad", Price: NewMoney(500, CurrencyUSD)},
 		}
-		_, err := db.CreateReceiptWithItems(party.ID, soldAt, "", badItems)
+		_, err := db.CreateReceiptWithItems(party.ID, soldAt, "", false, badItems)
 		require.Error(t, err)
 
 		var receiptsAfter, itemsAfter int
@@ -1071,7 +1071,7 @@ func TestCreateReceiptWithItems(t *testing.T) {
 	})
 
 	t.Run("RejectsEmptyItems", func(t *testing.T) {
-		_, err := db.CreateReceiptWithItems(party.ID, soldAt, "", nil)
+		_, err := db.CreateReceiptWithItems(party.ID, soldAt, "", false, nil)
 		assert.Error(t, err)
 	})
 
@@ -1080,7 +1080,7 @@ func TestCreateReceiptWithItems(t *testing.T) {
 			{ItemID: item.ID, Price: NewMoney(1000, CurrencyUSD)},
 			{ItemID: item.ID, Price: NewMoney(500, CurrencyCAD)},
 		}
-		_, err := db.CreateReceiptWithItems(party.ID, soldAt, "", items)
+		_, err := db.CreateReceiptWithItems(party.ID, soldAt, "", false, items)
 		assert.Error(t, err)
 	})
 
@@ -1088,7 +1088,7 @@ func TestCreateReceiptWithItems(t *testing.T) {
 		items := []ReceiptItemInput{
 			{ItemID: item.ID, Price: NewMoney(0, CurrencyUSD)},
 		}
-		_, err := db.CreateReceiptWithItems(party.ID, soldAt, "", items)
+		_, err := db.CreateReceiptWithItems(party.ID, soldAt, "", false, items)
 		assert.Error(t, err)
 	})
 }
@@ -1105,7 +1105,7 @@ func TestCreateDepositWithReceipts(t *testing.T) {
 		items := []ReceiptItemInput{
 			{ItemID: item.ID, Price: NewMoney(2000, CurrencyUSD)},
 		}
-		r, err := db.CreateReceiptWithItems(party.ID, soldAt, "", items)
+		r, err := db.CreateReceiptWithItems(party.ID, soldAt, "", false, items)
 		require.NoError(t, err)
 		return r
 	}
