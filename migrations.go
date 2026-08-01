@@ -15,7 +15,7 @@ var migrationsFS embed.FS
 // currentSchemaVersion is the schema version this binary knows about. Bump by
 // one whenever a new migrations/000N_*.sql file is added. The version is
 // stored in each database file as PRAGMA user_version.
-const currentSchemaVersion = 5
+const currentSchemaVersion = 6
 
 // migrate brings the database up to currentSchemaVersion. The work happens
 // inside a single BEGIN IMMEDIATE transaction so:

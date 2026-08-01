@@ -202,6 +202,93 @@ func (db *DB) CreateWithdrawal(accountID ID, payeeID ID, method TransactionMetho
 	return &transaction, nil
 }
 
+// DeleteWithdrawal deletes a withdrawal transaction together with all of its
+// expense line items in a single database transaction.
+//
+// It refuses to delete a check that has been reconciled (reconciliation_id IS
+// NOT NULL), since removing it would desync that reconciliation's cleared
+// balance; the transaction must be uncleared first. It also refuses anything
+// that is not a withdrawal (non-negative amount), such as a deposit.
+func (db *DB) DeleteWithdrawal(id ID) error {
+	transaction, err := db.Transaction(id)
+	if err != nil {
+		return err
+	}
+	if transaction.Amount >= 0 {
+		return fmt.Errorf("transaction %d is not a withdrawal", id)
+	}
+	if transaction.ReconciliationID != nil {
+		return fmt.Errorf("cannot delete a reconciled check; unclear it from its reconciliation first")
+	}
+
+	tx, err := db.conn.Beginx()
+	if err != nil {
+		return fmt.Errorf("failed to start transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	expensesQuery, expensesArgs := db.sq.Delete("expenses").
+		Where("transaction_id = ?", id).
+		MustSql()
+	if _, err := tx.Exec(expensesQuery, expensesArgs...); err != nil {
+		return fmt.Errorf("failed to delete expenses: %w", err)
+	}
+
+	txQuery, txArgs := db.sq.Delete("transactions").
+		Where("id = ?", id).
+		MustSql()
+	if _, err := tx.Exec(txQuery, txArgs...); err != nil {
+		return fmt.Errorf("failed to delete withdrawal: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit transaction: %w", err)
+	}
+
+	return nil
+}
+
+// ExpensesForTransaction returns the expense line items of a withdrawal
+// transaction, in insertion order.
+func (db *DB) ExpensesForTransaction(transactionID ID) ([]Expense, error) {
+	query, args := db.sq.Select("id", "transaction_id", "category_id", "description", "amount", "currency", "created_at", "modified_at").
+		From("expenses").
+		Where("transaction_id = ?", transactionID).
+		OrderBy("id ASC").
+		MustSql()
+
+	rows, err := db.conn.Query(query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query expenses: %w", err)
+	}
+	defer rows.Close()
+
+	var expenses []Expense
+	for rows.Next() {
+		var e Expense
+		var amount int64
+		var currency Currency
+		if err := rows.Scan(
+			&e.ID,
+			&e.TransactionID,
+			&e.CategoryID,
+			&e.Description,
+			&amount,
+			&currency,
+			&e.CreatedAt,
+			&e.ModifiedAt,
+		); err != nil {
+			return nil, fmt.Errorf("failed to scan expense: %w", err)
+		}
+		e.Amount = Money{Amount: amount, Currency: currency}
+		expenses = append(expenses, e)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating expenses: %w", err)
+	}
+	return expenses, nil
+}
+
 // HighestCheckNumber returns the highest numeric check number used for an account.
 // For earmark accounts, it looks at the root account and all its sub-accounts.
 // Returns 0 if no checks have been written.
@@ -280,4 +367,112 @@ func (db *DB) TransactionsByPayee(payeeID ID) ([]Transaction, error) {
 	}
 
 	return transactions, nil
+}
+
+// UpdateWithdrawal edits an existing withdrawal transaction (a check) in place:
+// it updates the header fields (payee, method, memo, date, check number) and
+// replaces the entire set of expense line items, recomputing the transaction
+// amount from the new expenses. Callers pass the complete desired expense set
+// rather than a diff. The bank account is not changed.
+//
+// It refuses to update a check that has been reconciled (reconciliation_id IS
+// NOT NULL), since changing its amount would desync that reconciliation's
+// cleared balance; the transaction must be uncleared first. It also refuses
+// anything that is not a withdrawal (non-negative amount).
+func (db *DB) UpdateWithdrawal(id ID, payeeID ID, method TransactionMethod, memo string, transactedAt time.Time, checkNumber *string, expenses []ExpenseItem) (*Transaction, error) {
+	if len(expenses) == 0 {
+		return nil, fmt.Errorf("at least one expense item is required for withdrawal")
+	}
+
+	// Calculate total amount from expenses and validate currencies.
+	var totalAmount int64
+	var currency Currency
+	for i, expense := range expenses {
+		if expense.Amount.Amount <= 0 {
+			return nil, fmt.Errorf("expense %d amount must be positive, got %d cents", i, expense.Amount.Amount)
+		}
+		if i == 0 {
+			currency = expense.Amount.Currency
+		} else if expense.Amount.Currency != currency {
+			return nil, fmt.Errorf("all expenses must have the same currency, got %s and %s", currency, expense.Amount.Currency)
+		}
+		totalAmount += expense.Amount.Amount
+	}
+
+	existing, err := db.Transaction(id)
+	if err != nil {
+		return nil, err
+	}
+	if existing.Amount >= 0 {
+		return nil, fmt.Errorf("transaction %d is not a withdrawal", id)
+	}
+	if existing.ReconciliationID != nil {
+		return nil, fmt.Errorf("cannot edit a reconciled check; unclear it from its reconciliation first")
+	}
+
+	// Validate the (unchanged) account currency matches the expense currency.
+	var accountCurrency Currency
+	if err := db.conn.Get(&accountCurrency, "SELECT currency FROM bank_accounts WHERE id = ?", existing.AccountID); err != nil {
+		return nil, fmt.Errorf("failed to get account currency: %w", err)
+	}
+	if accountCurrency != currency {
+		return nil, fmt.Errorf("expense currency %s does not match account currency %s", currency, accountCurrency)
+	}
+
+	// Verify the payee exists before mutating anything.
+	if _, err := db.Party(payeeID); err != nil {
+		return nil, fmt.Errorf("payee not found: %w", err)
+	}
+
+	tx, err := db.conn.Beginx()
+	if err != nil {
+		return nil, fmt.Errorf("failed to start transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	headerQuery, headerArgs := db.sq.Update("transactions").
+		SetMap(map[string]any{
+			"amount":        -totalAmount,
+			"payee_id":      payeeID,
+			"memo":          memo,
+			"method":        method,
+			"transacted_at": transactedAt.Round(0),
+			"check_number":  checkNumber,
+		}).
+		Where("id = ?", id).
+		Suffix("RETURNING *").
+		MustSql()
+
+	updated := Transaction{}
+	if err := tx.Get(&updated, headerQuery, headerArgs...); err != nil {
+		return nil, fmt.Errorf("failed to update withdrawal transaction: %w", err)
+	}
+
+	deleteQuery, deleteArgs := db.sq.Delete("expenses").
+		Where("transaction_id = ?", id).
+		MustSql()
+	if _, err := tx.Exec(deleteQuery, deleteArgs...); err != nil {
+		return nil, fmt.Errorf("failed to clear existing expenses: %w", err)
+	}
+
+	for _, expense := range expenses {
+		expenseQuery, expenseArgs := db.sq.Insert("expenses").
+			SetMap(map[string]any{
+				"transaction_id": id,
+				"category_id":    expense.CategoryID,
+				"description":    expense.Description,
+				"amount":         expense.Amount.Amount,
+				"currency":       expense.Amount.Currency,
+			}).
+			MustSql()
+		if _, err := tx.Exec(expenseQuery, expenseArgs...); err != nil {
+			return nil, fmt.Errorf("failed to insert expense: %w", err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("failed to commit transaction: %w", err)
+	}
+
+	return &updated, nil
 }

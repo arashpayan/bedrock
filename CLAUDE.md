@@ -128,6 +128,13 @@ An in-kind contribution records value a contributor donated directly (e.g. payin
 - `LedgerEntry` - represents a single row in a ledger view with transaction data and running balance
 - `LedgerOptions` - provides filtering and pagination options for ledger queries
 
+### Memorized Checks (Recurring-Check Templates)
+- `MemorizedCheck` - a reusable template for a recurring check: `Name`, `AccountID`, `PayeeID`, `Memo`. The date and check number are **never** stored (entered fresh per instance).
+- `MemorizedCheckExpense` - a template expense line (`CategoryID`, `Description`, `Amount`), mirroring `expenses` but attached to a memorized check.
+- **Methods** (`memorized_check_methods.go`): `CreateMemorizedCheck(name, accountID, payeeID, memo, []ExpenseItem)` (validates name + ≥1 expense + single currency matching the account, like `CreateWithdrawal`), `MemorizedCheck`, `MemorizedChecks` (ordered by name), `MemorizedCheckExpenses`, `RenameMemorizedCheck`, `DeleteMemorizedCheck` (header + lines in one tx). Schema added in `migrations/0006_memorized_checks.sql` (schema v6).
+- `ExpensesForTransaction(transactionID)` returns a withdrawal's expense lines (added to support memorizing an existing check).
+- **Note:** FK constraints reference categories/parties/accounts; deleting one still referenced by a memorized check fails at the DB level (the category/party/account `Delete*` methods don't yet check memorized-check usage explicitly).
+
 ### Fundraising Goal Tracking
 - `FundraisingGoal` - the editable target for one fiscal year (`FiscalYear` int + `Amount` Money). One goal per year, keyed by the starting calendar year.
 - `FundraisingProgress` - computed summary for a fiscal year: `Start`/`End` of the year, `Goal` (nil if unset), `Raised`, plus `Percent()` and `Remaining()` helpers.
@@ -226,7 +233,8 @@ defer db.Close()
     - **`UpdateReceiptWithItems`** edits the header (customer, sold date, memo) and replaces the entire line-item set in one transaction. **`DeleteReceiptWithItems`** removes a receipt and its items in one transaction. Both **refuse a deposited receipt** (`transaction_id IS NOT NULL`) — editing or deleting one would desync its deposit total, so it must be removed from the deposit first.
   - **ReceiptItem CRUD**: CreateReceiptItem, ReceiptItem, ReceiptItems, UpdateReceiptItem, DeleteReceiptItem
   - **BankAccount CRUD**: CreateBankAccount, BankAccount, BankAccountByName, RootBankAccounts, ChildBankAccounts, BankAccounts, ActiveBankAccounts, OpeningBalanceTransaction, UpdateBankAccount, UpdateOpeningBalanceDate, DeactivateBankAccount, DeleteBankAccount
-  - **Transaction CRUD**: CreateDeposit, CreateWithdrawal (with expense categorization and currency validation)
+  - **Transaction CRUD**: CreateDeposit, CreateWithdrawal (with expense categorization and currency validation), UpdateWithdrawal, DeleteWithdrawal
+    - **`UpdateWithdrawal`** edits a check's header (payee, method, memo, date, check number) and replaces its entire expense set in one transaction, recomputing `amount` from the new expenses; the bank account is not changed. **`DeleteWithdrawal`** removes a withdrawal and its expense lines in one transaction. Both **refuse a reconciled check** (`reconciliation_id IS NOT NULL`) — editing or deleting one would desync that reconciliation's cleared balance, so it must be uncleared first. This mirrors the deposited-receipt rule for `UpdateReceiptWithItems`/`DeleteReceiptWithItems`. Both also refuse a non-withdrawal (non-negative amount).
   - **Ledger Operations**: AccountLedger, AccountBalance, AccountBalanceAsOf, TransactionsForAccount, AccountTransactionCount, AllAccountBalances, LastTransactionDate
   - **Reconciliation Operations**: StartReconciliation, Reconciliation, Reconciliations, InProgressReconciliation, LastCompletedReconciliation, ClearTransaction, UnclearTransaction, ClearedTransactions, ClearedBalance, UnclearedTransactions, CompleteReconciliation, CancelReconciliation, UndoReconciliation
 
