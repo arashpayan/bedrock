@@ -343,6 +343,7 @@ const (
 	TransactionMethodAutoPay            TransactionMethod = "auto-pay"
 	TransactionMethodElectronicTransfer TransactionMethod = "electronic-transfer"
 	TransactionMethodInBranch           TransactionMethod = "in-branch"
+	TransactionMethodMobileApp          TransactionMethod = "mobile-app"
 	TransactionMethodCheck              TransactionMethod = "check"
 )
 
@@ -360,6 +361,8 @@ func (m TransactionMethod) Label() string {
 		return "Electronic Transfer"
 	case TransactionMethodInBranch:
 		return "In-Branch"
+	case TransactionMethodMobileApp:
+		return "Mobile App"
 	default:
 		return string(m)
 	}

@@ -151,7 +151,7 @@ An in-kind contribution records value a contributor donated directly (e.g. payin
 - `Party` - represents both contributors and vendors with optional contact information (email, Bahá'í ID, address, phone)
 
 ### Transactions
-- `TransactionMethod` - type-safe constants (ATM, auto-pay, electronic-transfer, in-branch, check)
+- `TransactionMethod` - type-safe constants (ATM, auto-pay, electronic-transfer, in-branch, mobile-app, check)
 - `Transaction` - unified deposits and withdrawals with amount (positive/negative), account, method, payee, etc.
 
 ### Database Connection
