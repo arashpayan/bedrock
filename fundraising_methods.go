@@ -140,18 +140,9 @@ func (db *DB) FundraisingProgress(fiscalYear int) (*FundraisingProgress, error) 
 	}
 	start, end := FiscalYearRange(fiscalYear, assembly.Timezone)
 
-	raisedQuery := `
-		SELECT COALESCE(SUM(ri.price), 0)
-		FROM receipt_items ri
-		JOIN receipts r ON r.id = ri.receipt_id
-		JOIN items i ON i.id = ri.item_id
-		WHERE i.counts_toward_goal = 1
-		  AND ri.currency = ?
-		  AND r.sold_at >= ? AND r.sold_at < ?`
-
-	var raised int64
-	if err := db.conn.Get(&raised, raisedQuery, assembly.DefaultCurrency, start, end); err != nil {
-		return nil, fmt.Errorf("failed to sum counted contributions: %w", err)
+	raised, err := db.countedContributions(start, end, assembly.DefaultCurrency)
+	if err != nil {
+		return nil, err
 	}
 
 	goal, err := db.FundraisingGoal(fiscalYear)
@@ -203,6 +194,31 @@ func (db *DB) SetFundraisingGoal(fiscalYear int, amount Money) (*FundraisingGoal
 	}
 	goal := row.toGoal()
 	return &goal, nil
+}
+
+// countedContributions sums the contributions that count toward the fundraising
+// goal with a SoldAt in the half-open range [start, end): those to non-earmarked
+// funds (Item.CountsTowardGoal) priced in the given currency. Deposit status is
+// deliberately ignored — a contribution counts when it is received.
+//
+// This is the single definition of "counts toward the goal"; FundraisingProgress
+// and MonthlyReport both go through it so the fiscal-year total and any
+// shorter-range total can never drift apart.
+func (db *DB) countedContributions(start, end time.Time, currency Currency) (int64, error) {
+	query := `
+		SELECT COALESCE(SUM(ri.price), 0)
+		FROM receipt_items ri
+		JOIN receipts r ON r.id = ri.receipt_id
+		JOIN items i ON i.id = ri.item_id
+		WHERE i.counts_toward_goal = 1
+		  AND ri.currency = ?
+		  AND r.sold_at >= ? AND r.sold_at < ?`
+
+	var total int64
+	if err := db.conn.Get(&total, query, currency, start, end); err != nil {
+		return 0, fmt.Errorf("failed to sum counted contributions: %w", err)
+	}
+	return total, nil
 }
 
 // FiscalYearForDate returns the starting calendar year of the fiscal year that

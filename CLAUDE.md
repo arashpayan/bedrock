@@ -124,6 +124,13 @@ An in-kind contribution records value a contributor donated directly (e.g. payin
 - `Expense` - line items for withdrawal transactions linking to Categories with Amount (Money type) and optional Description
 - `ExpenseItem` - input type for creating withdrawals with expense breakdowns
 
+### Expense Reporting Across Withdrawals
+Range queries in `expense_methods.go`, for reports that span many checks. Both take a **half-open** `[start, end)` range over the withdrawal's `transacted_at`, matching how `FundraisingProgress` ranges over receipts.
+- `ExpenseDetail` - one expense line plus its withdrawal's context (category name, account name, payee name, memo, check number, date), so a report needs no follow-up lookups. Returned by `ExpensesInRange(start, end)`, oldest first, with lines of one withdrawal in insertion order.
+- `ExpenseCategoryTotal` - a category's total over the range, from `ExpensesByCategory(start, end)`, ordered by category name. Categories with no spending in the range are omitted.
+- **Mixed currencies are never summed.** A category spent in two currencies yields **one row per currency** — the alternative would silently add USD to CAD.
+- **Cash only.** These read the `expenses` table, so in-kind receipt lines never appear even though they may carry a `CategoryID`: no money left a bank account.
+
 ### Ledger and Reporting
 - `LedgerEntry` - represents a single row in a ledger view with transaction data and running balance
 - `LedgerOptions` - provides filtering and pagination options for ledger queries
@@ -142,6 +149,27 @@ An in-kind contribution records value a contributor donated directly (e.g. payin
 - Package helpers `FiscalYearForDate(t, loc)` and `FiscalYearRange(fy, loc)` do the date math (timezone-aware); `db.CurrentFiscalYear()` resolves "now" in the Assembly timezone.
 - Only contributions to **non-earmarked** funds (`Item.CountsTowardGoal`), with a `Receipt.SoldAt` inside the fiscal year and in the Assembly's default currency, count toward `Raised`. The deposit date and deposit status are irrelevant — a contribution counts when *received*, which also lets undeposited (and future in-kind) contributions count.
 - **Methods** (`fundraising_methods.go`): `SetFundraisingGoal` (upsert, validates positive + default currency), `FundraisingGoal` (nil,nil when unset), `FundraisingGoals`, `DeleteFundraisingGoal`, `FundraisingProgress`. Schema added in `migrations/0004_fundraising_goals.sql` (schema v4): `items.counts_toward_goal` + `fundraising_goals` table.
+
+### Badí' (Bahá'í) Calendar
+Pure date math in `badi.go` — no database involvement. Used for reporting on a Bahá'í-month cadence.
+- `BadiPeriod` - one month of the Badí' calendar, or the run of Ayyám-i-Há days preceding ‘Alá'. Carries `Year` (Badí' year), `Month` (1–19, or `BadiMonthAyyamiHa` = 0), `Name`, and a half-open `Start`/`End` range. Methods: `Days()`, `IsAyyamiHa()`, `String()` (e.g. `"Sharaf 181 B.E."`).
+- **Constructors:** `BadiPeriodForDate(t, loc)`, `BadiPeriodsInRange(start, end, loc)` (every period overlapping the range, returned **whole** — the first and last may overhang), `NextBadiPeriod(p)`, `PreviousBadiPeriod(p)`.
+- **Naw-Rúz is astronomically fixed, not computed.** Since 172 B.E. its date follows the vernal equinox at Tehran, so `nawRuzDay` transcribes the published table of Bahá'í dates 180–221 B.E. ("Guidelines for Local Spiritual Assemblies" §8.4.1.1). **Everything else is derived** from consecutive Naw-Rúz dates: months 1–18 are 19 days, Ayyám-i-Há absorbs the remainder (4 or 5 days), and ‘Alá' is the final 19 days.
+- **The transcription is self-checking.** `TestAyyamiHaMatchesPublishedTable` asserts every derived Ayyám-i-Há start date and length against that table's Ayyám-i-Há column, transcribed separately. A single mistyped Naw-Rúz shifts the derived Ayyám-i-Há of the year before it, the year itself, or both — so the test fails. **Extend both tables together** when adding years.
+- **Supported range:** Naw-Rúz 180 B.E. (21 Mar 2023) through 19 Mar 2065. Outside it, every function returns an error wrapping `ErrBadiDateOutOfRange` rather than guessing. A trailing 222 B.E. entry (derived, not published) exists only to close out 221.
+- **Timezone handling:** Bahá'í days begin at sunset, but a period here starts at the first instant of its Gregorian start date in the given location, so ranges line up with the transaction dates a treasurer enters. Internally all arithmetic runs on UTC-anchored civil dates (`civilDate`/`daysBetween`) and is materialized with `startOfDay`, so DST transitions never shift a boundary or change a day count.
+
+### Bahá'í Month Report
+`report_methods.go` assembles the treasurer's start-of-month report: what came in toward the goal, what went out, and how the fiscal year is pacing. `MonthlyReport(period BadiPeriod)` returns the `MonthlyReport` struct; `CurrentBadiPeriod()` and `MostRecentlyCompletedBadiPeriod()` resolve "now" in the Assembly timezone (the latter is the month a report generated today covers).
+- **Two ranges, deliberately different.** Period figures (`PeriodContributions`, `Expenses`) cover the **whole Bahá'í month** — a report headed "Jamál" accounts for all of Jamál. Fiscal-year figures (`RaisedToDate` onward) run from the fiscal year's start to the end of the period, clipped at the year's end. `StraddlesFiscalYear` flags the one month a year where the two disagree, so the UI/PDF can footnote it.
+- **Which fiscal year?** The one containing the period's **last day**, not its first. The month crossing 1 May therefore reports against the year it ends in — the year whose pacing the treasurer is about to act on.
+- **Pacing is day-prorated:** `ExpectedToDate = goal × (days elapsed in FY ÷ days in FY)`. `Variance` = `RaisedToDate − ExpectedToDate` and is **the only signed Money in the codebase** (negative = behind schedule); format it accordingly.
+- **`AdjustedPeriodGoal`** = `RemainingGoal ÷ PeriodsRemaining`, **rounded up** to the cent so the schedule can never undershoot the goal. `PeriodsRemaining` counts Bahá'í months beginning between the end of the period and the end of the fiscal year, including the month now starting; it is zero for a month ending exactly at the fiscal-year boundary, which zeroes the adjusted goal.
+- **No goal set** → `Goal` is nil and every pacing field is zero, but contributions, expenses, and `PeriodsRemaining` still report normally.
+- **Mixed currencies never merge.** `ExpensesTotal` is the grand total in the Assembly's default currency; anything else is summed per currency into `ExpensesInOtherCurrencies` (normally empty) rather than added in. Contributions already count only the default currency, via `countedContributions`.
+- **`countedContributions(start, end, currency)`** (in `fundraising_methods.go`) is the **single definition of "counts toward the goal"**; both `FundraisingProgress` and `MonthlyReport` go through it so a fiscal-year total and a shorter-range total can never drift apart. Change it in one place only.
+- The caller's period is re-resolved in the Assembly timezone from an instant in its middle, so a period built in another location still names the same month.
+- **Reportable range:** fiscal years 2023–2063. FY2064 needs Bahá'í months past the Naw-Rúz table's end and returns `ErrBadiDateOutOfRange`; extending `nawRuzDay` lifts the limit.
 
 ### Reconciliation
 - `ReconciliationStatus` - type-safe constants (in-progress, completed). A reconciliation is either in-flight or done; cancel and undo delete the record entirely.
