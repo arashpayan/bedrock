@@ -171,7 +171,7 @@ func (db *DB) MonthlyReport(period BadiPeriod) (*MonthlyReport, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to count the Bahá'í months left in fiscal year %d: %w", fiscalYear, err)
 	}
-	report.PeriodsRemaining = len(periods)
+	report.PeriodsRemaining = countMonthsInFiscalYear(periods, fiscalYear, timezone)
 
 	if err := db.addParticipation(report, timezone); err != nil {
 		return nil, err
@@ -266,6 +266,30 @@ func (db *DB) MostRecentlyCompletedBadiPeriod() (BadiPeriod, error) {
 		return BadiPeriod{}, err
 	}
 	return PreviousBadiPeriod(current)
+}
+
+// countMonthsInFiscalYear counts how many of the given periods are Bahá'í
+// months of the fiscal year, for spreading a remaining goal across the months
+// still to be reported on.
+//
+// Two kinds of period are excluded. Ayyám-i-Há is not a month — it gets no
+// report of its own and no share of the goal. And a month is counted against
+// the fiscal year holding its **last day**, the same rule MonthlyReport uses to
+// pick a report's fiscal year, so the month straddling the following 1 May
+// belongs to the next year rather than this one. What remains is the 19 named
+// months that make up a fiscal year.
+func countMonthsInFiscalYear(periods []BadiPeriod, fiscalYear int, loc *time.Location) int {
+	var count int
+	for _, period := range periods {
+		if period.IsAyyamiHa() {
+			continue
+		}
+		if FiscalYearForDate(period.End.Add(-time.Nanosecond), loc) != fiscalYear {
+			continue
+		}
+		count++
+	}
+	return count
 }
 
 // civilDateOf strips t to the civil date of its own location, for day counting

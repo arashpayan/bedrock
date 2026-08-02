@@ -116,11 +116,13 @@ func TestMonthlyReportPacing(t *testing.T) {
 	assert.Equal(t, usd(-860_000), report.Variance, "behind schedule reads as a negative variance")
 	assert.Equal(t, usd(2_650_000), report.RemainingGoal)
 
-	// ‘Ilm ends 2 November; 11 Bahá'í months begin between then and 1 May 2026.
-	assert.Equal(t, 11, report.PeriodsRemaining)
-	// $26,500 over 11 months is $2,409.0909…, rounded up so 11 months cover it.
-	assert.Equal(t, usd(240_910), report.AdjustedPeriodGoal)
-	assert.GreaterOrEqual(t, report.AdjustedPeriodGoal.Amount*11, report.RemainingGoal.Amount,
+	// ‘Ilm ends 2 November, leaving Qudrat through Jalál 183 — 9 Bahá'í months.
+	// Ayyám-i-Há is not one of them, and Jamál 183 belongs to the next fiscal
+	// year because it ends after 30 April.
+	assert.Equal(t, 9, report.PeriodsRemaining)
+	// $26,500 over 9 months is $2,944.44…, rounded up so 9 months cover it.
+	assert.Equal(t, usd(294_445), report.AdjustedPeriodGoal)
+	assert.GreaterOrEqual(t, report.AdjustedPeriodGoal.Amount*9, report.RemainingGoal.Amount,
 		"the adjusted goal must never undershoot the remaining goal")
 }
 
@@ -138,7 +140,7 @@ func TestMonthlyReportWithoutGoal(t *testing.T) {
 	assert.Equal(t, usd(0), report.Variance)
 	assert.Equal(t, usd(0), report.RemainingGoal)
 	assert.Equal(t, usd(0), report.AdjustedPeriodGoal)
-	assert.Equal(t, 11, report.PeriodsRemaining, "the calendar does not depend on a goal")
+	assert.Equal(t, 9, report.PeriodsRemaining, "the calendar does not depend on a goal")
 }
 
 func TestMonthlyReportGoalMet(t *testing.T) {
@@ -196,7 +198,52 @@ func TestMonthlyReportLastMonthOfFiscalYear(t *testing.T) {
 	assert.Equal(t, 2025, report.FiscalYear)
 	assert.False(t, report.StraddlesFiscalYear)
 	assert.Equal(t, usd(500_000), report.RaisedToDate)
-	assert.Equal(t, 1, report.PeriodsRemaining, "only Jamál begins before 1 May")
+	// Jalál is the fiscal year's last Bahá'í month. Jamál begins on 28 April
+	// but ends on 16 May, so it opens the next fiscal year rather than closing
+	// this one, and nothing is left to spread a remaining goal across.
+	assert.Equal(t, 0, report.PeriodsRemaining)
+	assert.Equal(t, usd(0), report.AdjustedPeriodGoal)
+}
+
+// A fiscal year holds the 19 named months from the one containing 1 May through
+// the one before the next year's equivalent, so the month that opens a fiscal
+// year leaves 18 behind it. Neither Ayyám-i-Há nor the month straddling the
+// following 1 May is one of them.
+func TestPeriodsRemainingCountsOnlyThisYearsMonths(t *testing.T) {
+	db, _, _, _, _ := reportTestDB(t, time.UTC)
+
+	// Jamál 183 B.E. runs 28 April – 16 May 2026 and opens fiscal year 2026.
+	jamal, err := BadiPeriodForDate(date(2026, time.May, 5), time.UTC)
+	require.NoError(t, err)
+	require.Equal(t, date(2026, time.April, 28), jamal.Start)
+
+	report, err := db.MonthlyReport(jamal)
+	require.NoError(t, err)
+	require.Equal(t, 2026, report.FiscalYear)
+
+	assert.Equal(t, 18, report.PeriodsRemaining,
+		"‘Aẓamat 183 through Jalál 184, excluding Ayyám-i-Há and Jamál 184")
+}
+
+// Counting forward from the month that opens the year and back from the month
+// that closes it must agree: 19 named months in all.
+func TestFiscalYearHoldsNineteenBadiMonths(t *testing.T) {
+	db, _, _, _, _ := reportTestDB(t, time.UTC)
+
+	opening, err := BadiPeriodForDate(date(2026, time.May, 5), time.UTC) // Jamál 183
+	require.NoError(t, err)
+	closing, err := BadiPeriodForDate(date(2027, time.April, 15), time.UTC) // Jalál 184
+	require.NoError(t, err)
+
+	openingReport, err := db.MonthlyReport(opening)
+	require.NoError(t, err)
+	closingReport, err := db.MonthlyReport(closing)
+	require.NoError(t, err)
+
+	require.Equal(t, openingReport.FiscalYear, closingReport.FiscalYear)
+	assert.Equal(t, 0, closingReport.PeriodsRemaining, "the year ends with Jalál")
+	assert.Equal(t, 19, openingReport.PeriodsRemaining+1,
+		"the opening month plus those remaining is a full Bahá'í year of months")
 }
 
 func TestMonthlyReportSeparatesOtherCurrencies(t *testing.T) {
