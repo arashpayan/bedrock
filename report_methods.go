@@ -71,6 +71,26 @@ type MonthlyReport struct {
 	// no months remain.
 	PeriodsRemaining   int
 	AdjustedPeriodGoal Money
+
+	// Participation is how much of the community contributed during the period,
+	// nil when it has not been recorded. On an Ayyám-i-Há report it is always
+	// nil: those days are counted with Mulk, and ParticipationBelongsTo names
+	// the month that holds them.
+	Participation          *Participation
+	ParticipationBelongsTo string
+
+	// ParticipationHistory covers the named Bahá'í months of the fiscal year up
+	// to and including this period, oldest first, for charting the adult rate
+	// over the year. Months with no record carry a nil Data — distinct from a
+	// month in which nobody contributed.
+	ParticipationHistory []ParticipationPoint
+}
+
+// ParticipationPoint pairs one Bahá'í month with its participation record, if
+// any. Data is nil when the month has not been recorded.
+type ParticipationPoint struct {
+	Period BadiPeriod
+	Data   *Participation
 }
 
 // CurrentBadiPeriod returns the Bahá'í month containing the present moment in
@@ -153,6 +173,10 @@ func (db *DB) MonthlyReport(period BadiPeriod) (*MonthlyReport, error) {
 	}
 	report.PeriodsRemaining = len(periods)
 
+	if err := db.addParticipation(report, timezone); err != nil {
+		return nil, err
+	}
+
 	goal, err := db.FundraisingGoal(fiscalYear)
 	if err != nil {
 		return nil, err
@@ -178,6 +202,59 @@ func (db *DB) MonthlyReport(period BadiPeriod) (*MonthlyReport, error) {
 		Currency: goal.Amount.Currency,
 	}
 	return report, nil
+}
+
+// addParticipation fills in the report's participation figures: the reported
+// month's own record, and the fiscal year to date for charting.
+//
+// Ayyám-i-Há holds no record of its own — those days are counted with Mulk — so
+// an Ayyám-i-Há report points at Mulk instead, and the history skips it rather
+// than charting a gap that only reflects how the calendar works.
+func (db *DB) addParticipation(report *MonthlyReport, timezone *time.Location) error {
+	if report.Period.IsAyyamiHa() {
+		mulk, err := PreviousBadiPeriod(report.Period)
+		if err != nil {
+			return err
+		}
+		report.ParticipationBelongsTo = mulk.String()
+	} else {
+		participation, err := db.Participation(report.Period)
+		if err != nil {
+			return err
+		}
+		report.Participation = participation
+	}
+
+	// A fiscal year that opens before the Naw-Rúz table begins can only be
+	// charted from where the table does. The report itself is still valid, so
+	// the history is clamped rather than failing the whole thing.
+	historyStart := report.FiscalYearStart
+	if earliest := earliestBadiInstant(timezone); historyStart.Before(earliest) {
+		historyStart = earliest
+	}
+
+	elapsed, err := BadiPeriodsInRange(historyStart, report.Period.End, timezone)
+	if err != nil {
+		return fmt.Errorf("failed to list the Bahá'í months of fiscal year %d: %w", report.FiscalYear, err)
+	}
+
+	named := make([]BadiPeriod, 0, len(elapsed))
+	for _, period := range elapsed {
+		if !period.IsAyyamiHa() {
+			named = append(named, period)
+		}
+	}
+
+	records, err := db.ParticipationForPeriods(named)
+	if err != nil {
+		return err
+	}
+
+	report.ParticipationHistory = make([]ParticipationPoint, len(named))
+	for i, period := range named {
+		report.ParticipationHistory[i] = ParticipationPoint{Period: period, Data: records[i]}
+	}
+	return nil
 }
 
 // MostRecentlyCompletedBadiPeriod returns the Bahá'í month that ended most

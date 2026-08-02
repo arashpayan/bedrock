@@ -246,6 +246,15 @@ func badiPeriodForCivil(c time.Time, loc *time.Location) (BadiPeriod, error) {
 	}, nil
 }
 
+// earliestBadiInstant returns the first instant the Naw-Rúz table covers,
+// evaluated in loc. Callers enumerating a range that may start earlier clamp to
+// it rather than failing outright.
+func earliestBadiInstant(loc *time.Location) time.Time {
+	// firstBadiYear is always present in the table, so this cannot fail.
+	start, _ := nawRuz(firstBadiYear)
+	return startOfDay(start, loc)
+}
+
 // badiPeriodName returns the display name for a month ordinal, or "Ayyám-i-Há"
 // for BadiMonthAyyamiHa.
 func badiPeriodName(month int) string {
