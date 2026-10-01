@@ -202,6 +202,59 @@ func (db *DB) CreateWithdrawal(accountID ID, payeeID ID, method TransactionMetho
 	return &transaction, nil
 }
 
+// DeleteDeposit deletes a deposit transaction and returns every receipt it
+// held to the undeposited pool, in a single database transaction. This is the
+// "undo" for a deposit: the contributions themselves are preserved and can be
+// deposited again.
+//
+// It refuses to delete a deposit that has been reconciled (reconciliation_id
+// IS NOT NULL), since removing it would desync that reconciliation's cleared
+// balance; the transaction must be uncleared first. It also refuses anything
+// that is not a deposit (non-positive amount), and an account's opening
+// balance, which is edited through the account instead.
+func (db *DB) DeleteDeposit(id ID) error {
+	transaction, err := db.Transaction(id)
+	if err != nil {
+		return err
+	}
+	if transaction.Amount <= 0 {
+		return fmt.Errorf("transaction %d is not a deposit", id)
+	}
+	if transaction.ReconciliationID != nil {
+		return fmt.Errorf("cannot delete a reconciled deposit; unclear it from its reconciliation first")
+	}
+	if isOpeningBalance(transaction) {
+		return fmt.Errorf("cannot delete an opening balance; edit the bank account instead")
+	}
+
+	tx, err := db.conn.Beginx()
+	if err != nil {
+		return fmt.Errorf("failed to start transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	releaseQuery, releaseArgs := db.sq.Update("receipts").
+		Set("transaction_id", nil).
+		Where("transaction_id = ?", id).
+		MustSql()
+	if _, err := tx.Exec(releaseQuery, releaseArgs...); err != nil {
+		return fmt.Errorf("failed to release receipts: %w", err)
+	}
+
+	txQuery, txArgs := db.sq.Delete("transactions").
+		Where("id = ?", id).
+		MustSql()
+	if _, err := tx.Exec(txQuery, txArgs...); err != nil {
+		return fmt.Errorf("failed to delete deposit: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit transaction: %w", err)
+	}
+
+	return nil
+}
+
 // DeleteWithdrawal deletes a withdrawal transaction together with all of its
 // expense line items in a single database transaction.
 //
@@ -369,6 +422,134 @@ func (db *DB) TransactionsByPayee(payeeID ID) ([]Transaction, error) {
 	return transactions, nil
 }
 
+// UpdateDeposit edits an existing deposit transaction in place: its method,
+// memo, and date, along with the set of receipts it holds. The transaction's
+// amount is recomputed from the new receipt set. Callers pass the complete
+// desired receipt set rather than a diff; receipts dropped from the set are
+// returned to the undeposited pool. The bank account is not changed.
+//
+// Every receipt must be cash (not in-kind) and either undeposited or already
+// part of this deposit. It refuses to update a deposit that has been
+// reconciled (reconciliation_id IS NOT NULL), since changing its amount would
+// desync that reconciliation's cleared balance; the transaction must be
+// uncleared first. It also refuses anything that is not a deposit
+// (non-positive amount), and an account's opening balance, which is edited
+// through the account instead.
+func (db *DB) UpdateDeposit(id ID, method TransactionMethod, memo string, transactedAt time.Time, receiptIDs []ID) (*Transaction, error) {
+	if len(receiptIDs) == 0 {
+		return nil, fmt.Errorf("at least one receipt is required for a deposit")
+	}
+
+	existing, err := db.Transaction(id)
+	if err != nil {
+		return nil, err
+	}
+	if existing.Amount <= 0 {
+		return nil, fmt.Errorf("transaction %d is not a deposit", id)
+	}
+	if existing.ReconciliationID != nil {
+		return nil, fmt.Errorf("cannot edit a reconciled deposit; unclear it from its reconciliation first")
+	}
+	if isOpeningBalance(existing) {
+		return nil, fmt.Errorf("cannot edit an opening balance here; edit the bank account instead")
+	}
+
+	tx, err := db.conn.Beginx()
+	if err != nil {
+		return nil, fmt.Errorf("failed to start transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	// Every requested receipt must exist, be cash (in-kind contributions never
+	// belong to a deposit), and be either undeposited or already part of this
+	// deposit. Anything sitting in a different deposit is rejected.
+	availableQuery, availableArgs, err := sqlx.In(
+		"SELECT id FROM receipts WHERE id IN (?) AND is_in_kind = 0 AND (transaction_id IS NULL OR transaction_id = ?)",
+		receiptIDs, id)
+	if err != nil {
+		return nil, fmt.Errorf("failed to build receipt lookup: %w", err)
+	}
+	var availableIDs []ID
+	if err := tx.Select(&availableIDs, availableQuery, availableArgs...); err != nil {
+		return nil, fmt.Errorf("failed to check receipts: %w", err)
+	}
+	if len(availableIDs) != len(receiptIDs) {
+		return nil, fmt.Errorf("expected %d depositable (cash, undeposited) receipts, found %d", len(receiptIDs), len(availableIDs))
+	}
+
+	// Recompute the deposit total from the receipts' line items, and confirm
+	// they share the account's currency.
+	totalQuery, totalArgs, err := sqlx.In(
+		"SELECT COALESCE(SUM(price), 0) AS total, COUNT(DISTINCT currency) AS currencies, COALESCE(MIN(currency), '') AS currency FROM receipt_items WHERE receipt_id IN (?)",
+		receiptIDs)
+	if err != nil {
+		return nil, fmt.Errorf("failed to build receipt total lookup: %w", err)
+	}
+	var totals struct {
+		Total      int64    `db:"total"`
+		Currencies int      `db:"currencies"`
+		Currency   Currency `db:"currency"`
+	}
+	if err := tx.Get(&totals, totalQuery, totalArgs...); err != nil {
+		return nil, fmt.Errorf("failed to total receipts: %w", err)
+	}
+	if totals.Total <= 0 {
+		return nil, fmt.Errorf("deposit amount must be positive, got %d cents", totals.Total)
+	}
+	if totals.Currencies > 1 {
+		return nil, fmt.Errorf("all receipts must have the same currency")
+	}
+
+	var accountCurrency Currency
+	if err := tx.Get(&accountCurrency, "SELECT currency FROM bank_accounts WHERE id = ?", existing.AccountID); err != nil {
+		return nil, fmt.Errorf("failed to get account currency: %w", err)
+	}
+	if accountCurrency != totals.Currency {
+		return nil, fmt.Errorf("receipt currency %s does not match account currency %s", totals.Currency, accountCurrency)
+	}
+
+	headerQuery, headerArgs := db.sq.Update("transactions").
+		SetMap(map[string]any{
+			"amount":        totals.Total,
+			"memo":          memo,
+			"method":        method,
+			"transacted_at": transactedAt.Round(0),
+		}).
+		Where("id = ?", id).
+		Suffix("RETURNING *").
+		MustSql()
+
+	updated := Transaction{}
+	if err := tx.Get(&updated, headerQuery, headerArgs...); err != nil {
+		return nil, fmt.Errorf("failed to update deposit transaction: %w", err)
+	}
+
+	// Release the receipts this deposit no longer holds, then claim the full
+	// new set. Doing it in that order keeps a receipt that stays in the
+	// deposit from briefly looking undeposited to a concurrent reader.
+	releaseQuery, releaseArgs, err := sqlx.In("UPDATE receipts SET transaction_id = NULL WHERE transaction_id = ? AND id NOT IN (?)", id, receiptIDs)
+	if err != nil {
+		return nil, fmt.Errorf("failed to build receipt release: %w", err)
+	}
+	if _, err := tx.Exec(releaseQuery, releaseArgs...); err != nil {
+		return nil, fmt.Errorf("failed to release receipts: %w", err)
+	}
+
+	assignQuery, assignArgs, err := sqlx.In("UPDATE receipts SET transaction_id = ? WHERE id IN (?)", id, receiptIDs)
+	if err != nil {
+		return nil, fmt.Errorf("failed to build receipt assignment: %w", err)
+	}
+	if _, err := tx.Exec(assignQuery, assignArgs...); err != nil {
+		return nil, fmt.Errorf("failed to assign receipts: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("failed to commit transaction: %w", err)
+	}
+
+	return &updated, nil
+}
+
 // UpdateWithdrawal edits an existing withdrawal transaction (a check) in place:
 // it updates the header fields (payee, method, memo, date, check number) and
 // replaces the entire set of expense line items, recomputing the transaction
@@ -475,4 +656,12 @@ func (db *DB) UpdateWithdrawal(id ID, payeeID ID, method TransactionMethod, memo
 	}
 
 	return &updated, nil
+}
+
+// isOpeningBalance reports whether a transaction is the deposit that records a
+// bank account's opening balance, identified by the same well-known memo and
+// NULL method that OpeningBalanceTransaction looks for. Those are edited
+// through the account (UpdateOpeningBalanceDate), not the deposit editor.
+func isOpeningBalance(transaction *Transaction) bool {
+	return transaction.Memo == openingBalanceMemo && transaction.Method == nil
 }
