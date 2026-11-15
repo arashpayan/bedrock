@@ -217,6 +217,9 @@ func (db *DB) DeleteDeposit(id ID) error {
 	if err != nil {
 		return err
 	}
+	if err := rejectTransferLeg(transaction); err != nil {
+		return err
+	}
 	if transaction.Amount <= 0 {
 		return fmt.Errorf("transaction %d is not a deposit", id)
 	}
@@ -265,6 +268,9 @@ func (db *DB) DeleteDeposit(id ID) error {
 func (db *DB) DeleteWithdrawal(id ID) error {
 	transaction, err := db.Transaction(id)
 	if err != nil {
+		return err
+	}
+	if err := rejectTransferLeg(transaction); err != nil {
 		return err
 	}
 	if transaction.Amount >= 0 {
@@ -444,6 +450,9 @@ func (db *DB) UpdateDeposit(id ID, method TransactionMethod, memo string, transa
 	if err != nil {
 		return nil, err
 	}
+	if err := rejectTransferLeg(existing); err != nil {
+		return nil, err
+	}
 	if existing.Amount <= 0 {
 		return nil, fmt.Errorf("transaction %d is not a deposit", id)
 	}
@@ -584,6 +593,9 @@ func (db *DB) UpdateWithdrawal(id ID, payeeID ID, method TransactionMethod, memo
 	if err != nil {
 		return nil, err
 	}
+	if err := rejectTransferLeg(existing); err != nil {
+		return nil, err
+	}
 	if existing.Amount >= 0 {
 		return nil, fmt.Errorf("transaction %d is not a withdrawal", id)
 	}
@@ -661,7 +673,20 @@ func (db *DB) UpdateWithdrawal(id ID, payeeID ID, method TransactionMethod, memo
 // isOpeningBalance reports whether a transaction is the deposit that records a
 // bank account's opening balance, identified by the same well-known memo and
 // NULL method that OpeningBalanceTransaction looks for. Those are edited
-// through the account (UpdateOpeningBalanceDate), not the deposit editor.
+// through the account (UpdateOpeningBalanceDate), not the deposit editor. A
+// transfer leg also has a NULL method, so one whose memo happens to match is
+// excluded explicitly.
 func isOpeningBalance(transaction *Transaction) bool {
-	return transaction.Memo == openingBalanceMemo && transaction.Method == nil
+	return transaction.Memo == openingBalanceMemo && transaction.Method == nil && transaction.TransferID == nil
+}
+
+// rejectTransferLeg returns an error if transaction is one leg of a transfer.
+// The deposit and withdrawal editors use it: changing or deleting one leg on
+// its own would unbalance the pair, so transfers are changed only through
+// UpdateTransfer and DeleteTransfer.
+func rejectTransferLeg(transaction *Transaction) error {
+	if transaction.TransferID != nil {
+		return fmt.Errorf("transaction %d is part of a transfer; edit the transfer instead", transaction.ID)
+	}
+	return nil
 }

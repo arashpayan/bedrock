@@ -62,6 +62,12 @@ func (db *DB) ClearTransaction(reconciliationID ID, transactionID ID) error {
 		return fmt.Errorf("failed to get transaction: %w", err)
 	}
 
+	// A transfer between an account and its sub-account moves no money at the
+	// bank, so it never appears on a statement.
+	if transaction.TransferID != nil {
+		return fmt.Errorf("transfers between an account and its sub-accounts never appear on a bank statement and cannot be cleared")
+	}
+
 	// Verify transaction belongs to the same account (including subaccounts)
 	accountIDs, err := db.getAccountAndDescendantIDs(reconciliation.AccountID)
 	if err != nil {
@@ -331,7 +337,11 @@ func (db *DB) UnclearTransaction(transactionID ID) error {
 	return nil
 }
 
-// UnclearedTransactions returns all uncleared transactions for an account up to the statement date
+// UnclearedTransactions returns all uncleared transactions for an account up to
+// the statement date. Transfer legs are omitted: they never appear on a bank
+// statement, and since both legs of a transfer sit inside the reconciled
+// account's tree and cancel out, leaving them uncleared does not affect the
+// cleared balance.
 func (db *DB) UnclearedTransactions(accountID ID, statementDate time.Time) ([]Transaction, error) {
 	// Get account and all descendant account IDs
 	accountIDs, err := db.getAccountAndDescendantIDs(accountID)
@@ -343,6 +353,7 @@ func (db *DB) UnclearedTransactions(accountID ID, statementDate time.Time) ([]Tr
 	query := `SELECT * FROM transactions
 			  WHERE account_id IN (?)
 			  AND reconciliation_id IS NULL
+			  AND transfer_id IS NULL
 			  AND transacted_at <= ?
 			  ORDER BY transacted_at ASC, id ASC`
 

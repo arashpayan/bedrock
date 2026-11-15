@@ -265,10 +265,11 @@ type LedgerEntry struct {
 	RunningBalance Money       `json:"running_balance"`
 
 	// Optional enriched data
-	CustomerName *string `json:"customer_name,omitempty"` // For receipts
-	PayeeName    *string `json:"payee_name,omitempty"`    // For withdrawals
-	ReceiptCount int     `json:"receipt_count,omitempty"` // Number of receipts in deposit
-	ExpenseCount int     `json:"expense_count,omitempty"` // Number of expenses in withdrawal
+	CustomerName        *string `json:"customer_name,omitempty"`         // For receipts
+	PayeeName           *string `json:"payee_name,omitempty"`            // For withdrawals
+	ReceiptCount        int     `json:"receipt_count,omitempty"`         // Number of receipts in deposit
+	ExpenseCount        int     `json:"expense_count,omitempty"`         // Number of expenses in withdrawal
+	TransferAccountName *string `json:"transfer_account_name,omitempty"` // For transfer legs: the other account's name
 }
 
 // LedgerOptions provides filtering and pagination options
@@ -379,6 +380,7 @@ type Transaction struct {
 	PayeeID          *ID                `db:"payee_id"`          // foreign key to Party if this is a payment
 	ReconciliationID *ID                `db:"reconciliation_id"` // foreign key to Reconciliation if cleared
 	TransactedAt     time.Time          `db:"transacted_at"`     // when the transaction occurred
+	TransferID       *ID                `db:"transfer_id"`       // foreign key to Transfer if this is one of its legs
 }
 
 // DB represents the database connection and operations

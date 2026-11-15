@@ -18,13 +18,8 @@ const openingBalanceMemo = "Opening Balance"
 // If openingBalance has a positive amount, a deposit transaction is created with memo "Opening Balance"
 // dated at openingDate. openingDate is ignored when openingBalance is zero.
 func (db *DB) CreateBankAccount(name string, accountType AccountType, currency Currency, parentID *ID, description string, isActive bool, openingBalance Money, openingDate time.Time) (*BankAccount, error) {
-	if name == "" {
-		return nil, fmt.Errorf("account name cannot be empty")
-	}
-
-	// Only earmark accounts can have a parent
-	if parentID != nil && accountType != AccountTypeEarmark {
-		return nil, fmt.Errorf("only earmark accounts can have a parent account")
+	if err := db.validateNewBankAccount(name, accountType, currency, parentID); err != nil {
+		return nil, err
 	}
 
 	// Validate opening balance
@@ -38,37 +33,7 @@ func (db *DB) CreateBankAccount(name string, accountType AccountType, currency C
 		return nil, fmt.Errorf("opening date must be specified when opening balance is positive")
 	}
 
-	// Earmark accounts must have a parent that is checking or savings
-	var parent *BankAccount
-	if accountType == AccountTypeEarmark {
-		if parentID == nil {
-			return nil, fmt.Errorf("earmark accounts must have a parent account")
-		}
-		var err error
-		parent, err = db.BankAccount(*parentID)
-		if err != nil {
-			return nil, fmt.Errorf("failed to retrieve parent account: %w", err)
-		}
-		if parent.AccountType != AccountTypeChecking && parent.AccountType != AccountTypeSavings {
-			return nil, fmt.Errorf("earmark accounts must have a checking or savings parent, not %s", parent.AccountType)
-		}
-		// Earmarks must inherit parent's currency
-		if currency != parent.Currency {
-			return nil, fmt.Errorf("earmark accounts must use the same currency as their parent (%s)", parent.Currency)
-		}
-	}
-
-	accountQuery, accountArgs := db.sq.Insert("bank_accounts").
-		SetMap(map[string]any{
-			"parent_id":    parentID,
-			"name":         name,
-			"account_type": accountType,
-			"currency":     currency,
-			"description":  description,
-			"is_active":    isActive,
-		}).
-		Suffix("RETURNING *").
-		MustSql()
+	accountQuery, accountArgs := db.bankAccountInsert(name, accountType, currency, parentID, description, isActive)
 
 	// Fast path: no opening balance means a single statement.
 	if openingBalance.Amount == 0 {
@@ -104,6 +69,47 @@ func (db *DB) CreateBankAccount(name string, accountType AccountType, currency C
 		MustSql()
 	if _, err := tx.Exec(depositQuery, depositArgs...); err != nil {
 		return nil, fmt.Errorf("failed to create opening balance transaction: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("failed to commit transaction: %w", err)
+	}
+
+	return &account, nil
+}
+
+// CreateEarmarkFundedFromParent creates an active earmark under parentID and
+// funds it with a transfer of funding from the parent, dated fundedAt, in a
+// single database transaction. Use it to set aside money the parent already
+// holds. An opening balance (CreateBankAccount) instead records new money
+// arriving in the earmark, which raises the parent's combined balance.
+//
+// The earmark inherits the parent's currency. The transfer follows
+// CreateTransfer's rules, so the parent's own balance must cover funding or
+// the error wraps ErrInsufficientFunds; on any error no account is created.
+func (db *DB) CreateEarmarkFundedFromParent(name string, parentID ID, description string, funding Money, fundedAt time.Time) (*BankAccount, error) {
+	parent, err := db.BankAccount(parentID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to retrieve parent account: %w", err)
+	}
+	if err := db.validateNewBankAccount(name, AccountTypeEarmark, parent.Currency, &parentID); err != nil {
+		return nil, err
+	}
+
+	tx, err := db.conn.Beginx()
+	if err != nil {
+		return nil, fmt.Errorf("failed to start transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	accountQuery, accountArgs := db.bankAccountInsert(name, AccountTypeEarmark, parent.Currency, &parentID, description, true)
+	account := BankAccount{}
+	if err := tx.Get(&account, accountQuery, accountArgs...); err != nil {
+		return nil, fmt.Errorf("failed to insert bank account: %w", err)
+	}
+
+	if _, err := db.insertTransfer(tx, parent, &account, funding, earmarkFundingMemo, fundedAt); err != nil {
+		return nil, err
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -210,6 +216,7 @@ func (db *DB) OpeningBalanceTransaction(accountID ID) (*Transaction, error) {
 		Where("account_id = ?", accountID).
 		Where("memo = ?", openingBalanceMemo).
 		Where("method IS NULL").
+		Where("transfer_id IS NULL"). // a transfer leg also has no method
 		MustSql()
 
 	var transaction Transaction
@@ -288,6 +295,7 @@ func (db *DB) UpdateOpeningBalanceDate(accountID ID, newDate time.Time) error {
 		Where("account_id = ?", accountID).
 		Where("memo = ?", openingBalanceMemo).
 		Where("method IS NULL").
+		Where("transfer_id IS NULL"). // a transfer leg also has no method
 		MustSql()
 
 	result, err := db.conn.Exec(query, args...)
@@ -365,6 +373,22 @@ func (db *DB) DeleteBankAccount(id ID) error {
 	return nil
 }
 
+// bankAccountInsert builds the INSERT ... RETURNING * statement for a new bank
+// account. Callers validate the fields first with validateNewBankAccount.
+func (db *DB) bankAccountInsert(name string, accountType AccountType, currency Currency, parentID *ID, description string, isActive bool) (string, []any) {
+	return db.sq.Insert("bank_accounts").
+		SetMap(map[string]any{
+			"parent_id":    parentID,
+			"name":         name,
+			"account_type": accountType,
+			"currency":     currency,
+			"description":  description,
+			"is_active":    isActive,
+		}).
+		Suffix("RETURNING *").
+		MustSql()
+}
+
 // getChildAccountCount returns the number of child accounts for a given account
 func (db *DB) getChildAccountCount(accountID ID) (int, error) {
 	var count int
@@ -377,4 +401,39 @@ func (db *DB) getAccountTransactionCount(accountID ID) (int, error) {
 	var count int
 	err := db.conn.Get(&count, "SELECT COUNT(*) FROM transactions WHERE account_id = ?", accountID)
 	return count, err
+}
+
+// validateNewBankAccount checks the rules every new account must satisfy: it
+// has a name, only an earmark has a parent, and an earmark's parent is a
+// checking or savings account whose currency it shares.
+func (db *DB) validateNewBankAccount(name string, accountType AccountType, currency Currency, parentID *ID) error {
+	if name == "" {
+		return fmt.Errorf("account name cannot be empty")
+	}
+
+	// Only earmark accounts can have a parent
+	if parentID != nil && accountType != AccountTypeEarmark {
+		return fmt.Errorf("only earmark accounts can have a parent account")
+	}
+
+	if accountType != AccountTypeEarmark {
+		return nil
+	}
+
+	// Earmark accounts must have a parent that is checking or savings
+	if parentID == nil {
+		return fmt.Errorf("earmark accounts must have a parent account")
+	}
+	parent, err := db.BankAccount(*parentID)
+	if err != nil {
+		return fmt.Errorf("failed to retrieve parent account: %w", err)
+	}
+	if parent.AccountType != AccountTypeChecking && parent.AccountType != AccountTypeSavings {
+		return fmt.Errorf("earmark accounts must have a checking or savings parent, not %s", parent.AccountType)
+	}
+	// Earmarks must inherit parent's currency
+	if currency != parent.Currency {
+		return fmt.Errorf("earmark accounts must use the same currency as their parent (%s)", parent.Currency)
+	}
+	return nil
 }

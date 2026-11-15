@@ -319,6 +319,23 @@ func (db *DB) getAccountCurrency(accountID ID) Currency {
 func (db *DB) enrichLedgerEntry(entry *LedgerEntry) error {
 	transaction := &entry.Transaction
 
+	// A transfer leg has no receipts, payee, or expenses; name the account on
+	// the other side instead.
+	if transaction.TransferID != nil {
+		transfer, err := db.Transfer(*transaction.TransferID)
+		if err != nil {
+			return err
+		}
+		otherID := transfer.ToAccountID
+		if transaction.AccountID == transfer.ToAccountID {
+			otherID = transfer.FromAccountID
+		}
+		if other, err := db.BankAccount(otherID); err == nil {
+			entry.TransferAccountName = &other.Name
+		}
+		return nil
+	}
+
 	// For deposits, get customer name and receipt count
 	if transaction.Amount > 0 {
 		// Get receipts for this transaction

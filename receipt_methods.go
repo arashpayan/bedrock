@@ -346,14 +346,21 @@ func (db *DB) AssignReceiptToTransaction(receiptID, transactionID ID) (*Receipt,
 		return nil, fmt.Errorf("receipt %d is an in-kind contribution and cannot be deposited", receiptID)
 	}
 
-	// Verify transaction exists and is a deposit (positive amount)
-	var amount int64
-	err := db.conn.Get(&amount, "SELECT amount FROM transactions WHERE id = ?", transactionID)
+	// Verify transaction exists and is a deposit (positive amount) rather than
+	// the receiving leg of a transfer, which holds no contributions.
+	var target struct {
+		Amount     int64 `db:"amount"`
+		TransferID *ID   `db:"transfer_id"`
+	}
+	err := db.conn.Get(&target, "SELECT amount, transfer_id FROM transactions WHERE id = ?", transactionID)
 	if err != nil {
 		return nil, fmt.Errorf("transaction not found: %w", err)
 	}
-	if amount <= 0 {
-		return nil, fmt.Errorf("transaction %d is not a deposit (amount: %d)", transactionID, amount)
+	if target.TransferID != nil {
+		return nil, fmt.Errorf("transaction %d is part of a transfer, not a deposit", transactionID)
+	}
+	if target.Amount <= 0 {
+		return nil, fmt.Errorf("transaction %d is not a deposit (amount: %d)", transactionID, target.Amount)
 	}
 
 	query, args := db.sq.Update("receipts").

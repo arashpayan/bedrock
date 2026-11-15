@@ -86,6 +86,7 @@ func SomeOtherFunction() {
 - **Only earmark accounts can have a parent** (checking/savings accounts are always top-level)
 - **Sub-accounts must inherit currency from their parent** (enforced in `CreateBankAccount`)
 - **Opening balance support**: Accounts can be created with an initial balance and an opening date, which creates a deposit transaction with memo "Opening Balance" dated at the given date. The date can be edited later via `UpdateOpeningBalanceDate`.
+- **Transfers between an account and its sub-account** are a header row plus two ordinary transaction legs, so balances need no special cases (see "Transfers" below). An earmark can also be created already funded from its parent (`CreateEarmarkFundedFromParent`) instead of with an opening balance.
 - Integer-based monetary amounts to avoid floating-point precision issues
 
 ## Dependencies
@@ -190,7 +191,19 @@ Community participation in contributing to the Fund, per Bahá'í month. Added i
 
 ### Transactions
 - `TransactionMethod` - type-safe constants (ATM, auto-pay, electronic-transfer, in-branch, mobile-app, check)
-- `Transaction` - unified deposits and withdrawals with amount (positive/negative), account, method, payee, etc.
+- `Transaction` - unified deposits and withdrawals with amount (positive/negative), account, method, payee, etc. `TransferID` is set only on the legs of a transfer.
+
+### Transfers (Account ↔ Sub-account)
+Moves money between a bank account and one of its **direct** sub-accounts — setting funds aside in an earmark, or releasing them back. Schema added in `migrations/0008_transfers.sql` (schema v8); methods in `transfer_methods.go`.
+- **Storage:** a `transfers` header row (`Transfer`: from/to account, positive `Amount`, `Memo`, `TransferredAt`) plus **two ordinary transaction legs** that reference it through `transactions.transfer_id`: −amount on the source, +amount on the destination (source leg inserted first). Legs have no method, payee, or check number, and mirror the header's memo and date. bedrock writes all three rows in one SQL transaction; never write a leg directly.
+- **Why legs:** every balance, as-of, and ledger query already sums `transactions`, so each account's own balance moves and the parent's combined balance (`includeSubaccounts`) is unchanged, with no special cases.
+- **`transfer_id`, not the method, marks a leg.** An opening balance is *also* a NULL-method transaction, so `isOpeningBalance`, `OpeningBalanceTransaction`, and `UpdateOpeningBalanceDate` all require `transfer_id IS NULL`.
+- **Methods:** `CreateTransfer(from, to, amount, memo, at)`, `Transfer(id)`, `UpdateTransfer(id, amount, memo, at)` (accounts and direction are immutable — delete and recreate instead), `DeleteTransfer(id)`, and `CreateEarmarkFundedFromParent(name, parentID, description, funding, at)`, which creates an active earmark and funds it from the parent atomically (memo `"Initial funding"`; on any error no account is created). Use it to set aside money the parent already holds; an opening balance instead records new money and raises the parent's combined balance.
+- **Rules:** one account must be the other's direct parent (no siblings or unrelated accounts), currencies match, both accounts are active (on create), amount is positive.
+- **No overdrafts — except on delete.** Creating or editing a transfer may not take any account's **own** balance (excluding its sub-accounts, all dates) below zero; the error wraps `ErrInsufficientFunds`. An edit checks the source when the amount rises and the destination when it falls (the earmark may already have spent the money). Money already set aside in a sibling earmark is not the parent's to move. **`DeleteTransfer` is always allowed**, even when it leaves the destination negative — deleting is how a mistake is undone.
+- **Other editors refuse legs** (`rejectTransferLeg`): `UpdateWithdrawal`, `DeleteWithdrawal`, `UpdateDeposit`, `DeleteDeposit`, and `AssignReceiptToTransaction`. Changing one leg alone would unbalance the pair.
+- **Reconciliation never sees legs.** Nothing moved at the bank, so `UnclearedTransactions` omits them and `ClearTransaction` rejects them. Both legs live in the reconciled root's tree and cancel out, so `ClearedBalance` is unaffected.
+- **Ledger:** `LedgerEntry.TransferAccountName` names the account on the other side of a leg.
 
 ### Database Connection
 - `DB` - database connection with sqlx.DB and squirrel builder
@@ -209,6 +222,8 @@ Community participation in contributing to the Fund, per Bahá'í month. Added i
 - **Transaction → Party**: Many-to-One (withdrawal transactions have payees)
 - **Transaction → Expense**: One-to-Many (withdrawal transactions contain multiple expense line items)
 - **Transaction → Reconciliation**: Many-to-One (cleared transactions belong to a reconciliation)
+- **Transaction → Transfer**: Many-to-One (exactly two legs per transfer; NULL for every other transaction)
+- **Transfer → BankAccount**: Many-to-One, twice (`from_account_id`, `to_account_id`; one is the other's direct parent)
 - **Expense → Category**: Many-to-One (expenses belong to specific categories)
 - **Reconciliation → BankAccount**: Many-to-One (reconciliations belong to root-level accounts only)
 
@@ -222,7 +237,8 @@ Schema is defined in `schema.sql` and embedded into the Go binary using `//go:em
 - `receipts` table - contribution receipts with customer_id (Party FK) and transaction_id foreign key (nullable)
 - `receipt_items` table - line items with receipt_id and item_id foreign keys, price and currency
 - `reconciliations` table - reconciliation sessions with account_id, statement date/balance, status, and completion timestamp
-- `transactions` table - all deposits and withdrawals with account_id, optional payee_id, and optional reconciliation_id foreign keys
+- `transactions` table - all deposits and withdrawals with account_id, optional payee_id, optional reconciliation_id, and optional transfer_id foreign keys
+- `transfers` table - transfer headers (from/to account, amount, currency, memo, transferred_at); added in migration 0008
 - `expenses` table - expense line items with transaction_id and category_id foreign keys, amount and optional description
 - Automatic timestamp triggers for modified_at updates on all tables
 - Foreign key constraints enabled for data integrity
@@ -274,6 +290,8 @@ defer db.Close()
   - **Transaction CRUD**: CreateDeposit, CreateDepositWithReceipts, CreateWithdrawal (with expense categorization and currency validation), UpdateDeposit, DeleteDeposit, UpdateWithdrawal, DeleteWithdrawal
     - **`UpdateWithdrawal`** edits a check's header (payee, method, memo, date, check number) and replaces its entire expense set in one transaction, recomputing `amount` from the new expenses; the bank account is not changed. **`DeleteWithdrawal`** removes a withdrawal and its expense lines in one transaction. Both **refuse a reconciled check** (`reconciliation_id IS NOT NULL`) — editing or deleting one would desync that reconciliation's cleared balance, so it must be uncleared first. This mirrors the deposited-receipt rule for `UpdateReceiptWithItems`/`DeleteReceiptWithItems`. Both also refuse a non-withdrawal (non-negative amount).
     - **`UpdateDeposit`** edits a deposit's header (method, memo, date) and replaces its entire receipt set in one transaction, recomputing `amount` from the new receipts' line items; the bank account is not changed. Receipts dropped from the set return to the undeposited pool, and each incoming receipt must be cash and either undeposited or already in this deposit. **`DeleteDeposit`** removes the transaction and releases its receipts (the contributions themselves survive) — this is the "undo" for a deposit. Both **refuse a reconciled deposit** and a **non-deposit** (non-positive amount), mirroring the withdrawal rules. Both also **refuse an account's opening balance** (`isOpeningBalance`: the well-known memo with a NULL method), which is edited through the account via `UpdateOpeningBalanceDate`.
+    - All four refuse a **transfer leg** (`transfer_id IS NOT NULL`); transfers are changed only through `UpdateTransfer`/`DeleteTransfer`.
+  - **Transfer CRUD**: CreateTransfer, Transfer, UpdateTransfer, DeleteTransfer, CreateEarmarkFundedFromParent (see "Transfers" above)
   - **Ledger Operations**: AccountLedger, AccountBalance, AccountBalanceAsOf, TransactionsForAccount, AccountTransactionCount, AllAccountBalances, LastTransactionDate
   - **Reconciliation Operations**: StartReconciliation, Reconciliation, Reconciliations, InProgressReconciliation, LastCompletedReconciliation, ClearTransaction, UnclearTransaction, ClearedTransactions, ClearedBalance, UnclearedTransactions, CompleteReconciliation, CancelReconciliation, UndoReconciliation
 
@@ -321,6 +339,7 @@ Reconciliation matches transactions in Bedrock with bank statements to guard aga
 - Transactions from subaccounts can be cleared against the parent account's reconciliation
 - Only one in-progress reconciliation per account at a time
 - Transactions dated after the statement date cannot be cleared
+- Transfer legs are never listed as uncleared and cannot be cleared (they never appear on a statement)
 - Only the most recent completed reconciliation can be undone
 - Cancel and undo both delete the record and unclear its transactions in a single transaction. `CancelReconciliation` returns only `error`; the record is gone on success.
 
